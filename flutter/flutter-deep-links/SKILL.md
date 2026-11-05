@@ -143,8 +143,7 @@ Notes on Mode A:
   - Add one `<intent-filter android:autoVerify="true">` for https links with `VIEW`, `DEFAULT`, `BROWSABLE`, `scheme="https"`, and each `host`. Add optional `pathPrefix` / `pathPattern` (or, on API 31+, `pathAdvancedPattern`).
   - Put the custom scheme in a **separate** intent filter without `autoVerify`. Mixing the scheme into the https filter muddles verification.
   - Add `<meta-data android:name="flutter_deeplinking_enabled" android:value="false" />` for Mode B.
-- [ ] Keep `android:exported="true"` on the activity (required on API 31+ when it has intent filters).
-- [ ] Use `manifestPlaceholders` per flavor for the host (`android:host="${deepLinkHost}"`), so staging builds don't claim prod links.
+- [ ] Keep `android:exported="true"` on the activity (required on API 31+ with intent filters). Use `manifestPlaceholders` per flavor for the host (`android:host="${deepLinkHost}"`), so staging builds don't claim prod links.
 - [ ] Narrow path filters (`pathPrefix="/p/"`) keep the app from capturing web-only pages (`/blog`, `/legal`). Do this filtering in the manifest, not in Dart, because a captured URL can't go back to the browser.
 - [ ] Android 12+: users can turn link handling off per app (*Settings → Apps → Open by default*). If verification fails, consider a gentle in-app prompt that deep-links to that settings screen.
 
@@ -152,8 +151,7 @@ Notes on Mode A:
 
 - [ ] Use `MaterialApp.router(routerConfig: router)`. Create the router **once**, outside `build` (a top-level final, a provider, or a field in a State). Recreating it resets navigation and drops links.
 - [ ] Use one top-level `redirect` for auth and onboarding gates, with `refreshListenable` bound to the auth/session state, so the redirect runs again when the user signs in.
-- [ ] Use `errorBuilder` / `onException` for unknown paths: show a friendly "link not found" screen with a way home. Never show a blank page.
-- [ ] Turn on `debugLogDiagnostics: true` in debug builds.
+- [ ] Use `errorBuilder` / `onException` for unknown paths: a friendly "link not found" screen with a way home, never a blank page. Turn on `debugLogDiagnostics` in debug builds.
 
 ## 5. URL design
 
@@ -164,9 +162,8 @@ Notes on Mode A:
 - [ ] Give **campaign links** a stable short path you control (`https://example.com/go/summer`), resolved server-side to a destination, so marketing can change the destination without changing printed links.
 - [ ] **Encoding**: build URLs with `Uri(...)` / `Uri.https(...)`, never string concatenation. Read values with `uri.queryParameters` (decoded). Watch for `+` vs `%20` and double-encoding by email click trackers.
 - [ ] **Query params for state, path for identity**: `/search?q=shoes&sort=price`, `/p/123?variant=red`. Ignore unknown params, never fail on them (UTM params, tracker params like `fbclid`, `gclid`).
-- [ ] Keep **case-insensitive hosts** and case-sensitive paths. Decide on trailing slashes and normalize them.
+- [ ] Case-insensitive hosts, case-sensitive paths, normalized trailing slashes; URLs under ~2,000 characters (some clients truncate).
 - [ ] Carry **account / portal hints** only as opaque IDs (`?ws=w_123`), never emails or names (§8).
-- [ ] Keep URLs under ~2,000 characters. Some clients truncate.
 
 ## 6. Routing
 
@@ -216,8 +213,7 @@ Notes on Mode A:
 
 - [ ] If the app supports several accounts or portals (workspaces/organizations/teams), the link must say **which** one it is for. Use an opaque `?acct=` / `?ws=` param or a path prefix (`/w/{portalId}/...`), or have the server resolve it from the resource ID.
 - [ ] Resolution order: the explicit hint in the link → the server lookup ("which of my accounts can see order 123?") → the active account.
-- [ ] Target is in the **active** account and portal → navigate.
-- [ ] Target is in another **signed-in account** or another **portal** of the active account → confirm ("Open in Acme workspace?"), then run the switch flow from **flutter-multi-account** (teardown, rebuild scoped state, reset navigation), *then* navigate. Never show account B's data under account A's session.
+- [ ] Target is in the **active** account and portal → navigate. Target is in another **signed-in account** or another **portal** of the active account → confirm ("Open in Acme workspace?"), then run the switch flow from **flutter-multi-account** (teardown, rebuild scoped state, reset navigation), *then* navigate. Never show account B's data under account A's session.
 - [ ] Target is in an account that **isn't signed in** → "Sign in to view": store the pending link, run add-account, resume.
 - [ ] **No access** (removed from portal, wrong user) → a clear "You don't have access" screen with a switch-account option. Don't show a generic 404 or a crash.
 - [ ] Logged-out user + invite link → signup/login, then accept the invite, then land in the new portal.
@@ -239,8 +235,7 @@ Evaluation criteria when picking a mechanism or a third-party link service:
 - [ ] **Privacy**: no fingerprinting without consent, a data processing agreement, data region, App Store privacy label impact, whether ATT is required.
 - [ ] **Hosting of your domain**: can you keep links on *your* domain (so AASA/assetlinks stay yours and links survive a vendor switch)?
 - [ ] **Exit cost**: if the service shuts down, do existing links still resolve? The Firebase Dynamic Links shutdown broke every `page.link` URL that wasn't on a custom domain the owner controlled.
-- [ ] **SDK weight and swizzling**: what does it hook into AppDelegate/Activity, and what does it collect?
-- [ ] Web fallback quality, social preview (Open Graph) support, analytics export.
+- [ ] **SDK weight and swizzling** (what it hooks into AppDelegate/Activity, what it collects), web fallback quality, Open Graph previews, analytics export.
 
 **Firebase Dynamic Links migration** (service shut down 25 Aug 2025):
 - [ ] Remove `firebase_dynamic_links` and its `FirebaseDynamicLinks.instance.onLink` / `getInitialLink` code.
@@ -270,8 +265,7 @@ All of these should produce a `Uri` and enter the **same coordinator**, so they 
 - [ ] **App not installed**: the website for the same URL shows the content (or a preview) plus App Store / Play badges. On iOS, add a Smart App Banner (`<meta name="apple-itunes-app" content="app-id=..., app-argument=https://example.com/p/123">`).
 - [ ] **Unknown path** (old version doesn't know the new route): "This link needs a newer version" with an update button when the link is a known future feature (keep a list, or have the server say so). Otherwise "Link not found" with a way home. Keep the URL in analytics.
 - [ ] **Expired / used links** (password reset, one-time invites): an explicit message plus the next step ("Request a new link").
-- [ ] **Removed content**: a 404 screen in the app with a way home. Never show an empty detail screen with a spinner forever.
-- [ ] **Removed routes**: keep an alias that redirects to the nearest live screen (§5). Never delete a path the app once handled.
+- [ ] **Removed content**: a 404 screen with a way home, never a spinner forever. **Removed routes**: keep an alias to the nearest live screen (§5); never delete a path the app once handled.
 - [ ] **Feature-flagged / region-locked routes**: handle "not available" explicitly. Do not just render home.
 - [ ] **App too old to verify** (the AASA has changed but the user hasn't updated): the website still works. That is why every path needs a web page.
 
@@ -281,12 +275,10 @@ All of these should produce a `Uri` and enter the **same coordinator**, so they 
 - [ ] **No destructive or state-changing actions straight from a link**: no "delete", "pay", "transfer", "accept terms", "change email" on open. Show the screen with an explicit confirm button. A link can *pre-fill*, never *execute*.
 - [ ] Only tokens that are **one-time, short-lived and server-validated** can authenticate (magic link, email verify). Bind them to the device or session where possible. Never log full tokens. Strip them from analytics and crash breadcrumbs.
 - [ ] **Open redirect**: never navigate to (or open in a WebView / `url_launcher`) a URL taken from a param (`?next=`, `?redirect=`, `?from=`) unless it is a **relative path** that your router knows, or a host on your allowlist. Reject `//evil.com`, `javascript:`, `file:`, `intent:`, and other schemes.
-- [ ] **WebView targets**: don't load arbitrary link-provided URLs in a WebView that has JavaScript bridges or auth cookies.
-- [ ] **Custom scheme hijacking**: another app can register your scheme. Never send secrets (auth codes without PKCE, tokens) to a custom scheme. Use PKCE, and prefer https callbacks with verification.
+- [ ] **WebView targets**: don't load arbitrary link-provided URLs in a WebView that has JavaScript bridges or auth cookies. **Custom scheme hijacking**: another app can register your scheme. Never send secrets (auth codes without PKCE, tokens) to a custom scheme. Use PKCE, and prefer https callbacks with verification.
 - [ ] **Android intent spoofing**: don't export extra activities that take links. Keep link handling on `MainActivity` and validate inside Dart.
 - [ ] **Route guards still apply**: a link to `/admin/...` or to another user's `/orders/123` must go through the same auth and permission checks as in-app navigation. The server enforces access. The client only shows "no access" nicely.
-- [ ] **Rate-limit / protect** server endpoints that resolve links (short-link lookups, invite codes) against enumeration.
-- [ ] Watch for **PII in URLs** (emails, phone numbers, names). URLs end up in logs, analytics, and referrer headers.
+- [ ] **Rate-limit** link-resolving endpoints (short links, invite codes) against enumeration. Watch for **PII in URLs** (emails, phone numbers, names). URLs end up in logs, analytics, and referrer headers.
 
 ## 13. Analytics
 
@@ -295,8 +287,7 @@ All of these should produce a `Uri` and enter the **same coordinator**, so they 
 - [ ] Log the outcome of **pending links** (resumed / expired / abandoned at login) to see how much the auth gate costs.
 - [ ] Track the **unknown link rate** per app version. Spikes mean a marketing link went out ahead of the release, or an alias was removed.
 - [ ] Measure the **verification failure rate** on the server side: traffic to deep-link pages from mobile user agents with the app installed (the web page can detect it via a smart banner click or an "open in app" click).
-- [ ] Never log full URLs with tokens (§12). Redact query params with an allowlist.
-- [ ] Attribution through installs is §9. Keep the privacy rules there (no fingerprinting without consent).
+- [ ] Never log full URLs with tokens (§12); redact query params with an allowlist. Install attribution follows §9's privacy rules.
 
 ## 14. Testing
 
@@ -430,7 +421,6 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
 
 ```xml
 <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" ...>
-
     <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
 
     <!-- Verified https App Links: only paths the app really handles -->
@@ -446,7 +436,6 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
         <data android:pathPrefix="/invite/" />
         <!-- ...one <data android:pathPrefix> per claimed prefix (/w/, /go/) -->
     </intent-filter>
-
     <!-- Custom scheme: separate filter, no autoVerify -->
     <intent-filter>
         <action android:name="android.intent.action.VIEW" />
@@ -711,15 +700,9 @@ abstract interface class SessionGate {
 typedef LinkAnalytics = void Function(String event, Map<String, Object?> params);
 
 class DeepLinkCoordinator {
-  DeepLinkCoordinator({
-    required this.router,
-    required this.session,
-    required this.parser,
-    required this.pending,
-    required this.analytics,
-    AppLinks? appLinks,
-    DateTime Function()? clock,
-  })  : _appLinks = appLinks ?? AppLinks(),
+  DeepLinkCoordinator({required this.router, required this.session, required this.parser,
+      required this.pending, required this.analytics, AppLinks? appLinks, DateTime Function()? clock})
+      : _appLinks = appLinks ?? AppLinks(),
         _clock = clock ?? DateTime.now;
 
   final GoRouter router;
@@ -738,9 +721,8 @@ class DeepLinkCoordinator {
     session.changes.addListener(_onSessionChanged);
     // app_links 6+: uriLinkStream also emits the initial link; the dedupe in
     // [_onUri] guards against platforms/versions that deliver it twice.
-    _sub = _appLinks.uriLinkStream.listen(_onUri, onError: (Object e) {
-      analytics('deep_link_error', {'error': e.runtimeType.toString()});
-    });
+    _sub = _appLinks.uriLinkStream.listen(_onUri,
+        onError: (Object e) => analytics('deep_link_error', {'error': e.runtimeType.toString()}));
     final initial = await _appLinks.getInitialLink();
     if (initial != null) _onUri(initial);
     // Anything that arrives after this frame is a warm link.
@@ -754,9 +736,8 @@ class DeepLinkCoordinator {
 
   void _onUri(Uri uri) {
     final now = _clock();
-    if (uri == _lastUri && _lastAt != null && now.difference(_lastAt!) < const Duration(seconds: 2)) {
-      return; // same link delivered twice (initial + stream, or double tap)
-    }
+    // same link delivered twice (initial + stream, or double tap)
+    if (uri == _lastUri && _lastAt != null && now.difference(_lastAt!) < const Duration(seconds: 2)) return;
     (_lastUri, _lastAt) = (uri, now);
     _handle(parser.parse(uri));
   }
@@ -764,10 +745,9 @@ class DeepLinkCoordinator {
   void _onSessionChanged() {
     if (!_ready) return;
     final link = pending.take();
-    if (link != null) {
-      analytics('deep_link_resumed', {'route': link.target.runtimeType.toString()});
-      _handle(link);
-    }
+    if (link == null) return;
+    analytics('deep_link_resumed', {'route': link.target.runtimeType.toString()});
+    _handle(link);
   }
 
   bool get _ready => session.isRestored;
@@ -777,13 +757,9 @@ class DeepLinkCoordinator {
     void log(String outcome) => analytics('deep_link_opened', {'source': link.source.name,
           'route': t.runtimeType.toString(), 'app_state': _coldStart ? 'cold' : 'warm', 'outcome': outcome, ...link.utm});
 
-    if (!_ready) {
-      pending.save(link);
-      return log('pending_restore');
-    }
-    if (_busy) {
-      pending.save(link); // latest wins; picked up when the current one finishes
-      return log('queued');
+    if (!_ready || _busy) {
+      pending.save(link); // latest wins; picked up after restore / when the current one finishes
+      return log(_ready ? 'queued' : 'pending_restore');
     }
     _busy = true;
     try {
@@ -793,15 +769,11 @@ class DeepLinkCoordinator {
         router.go(ok ? '/home' : '/link-expired');
         return log(ok ? 'routed' : 'expired');
       }
-      if (t.requiresAuth && !session.isSignedIn) {
+      final needsLogin = t.requiresAuth && !session.isSignedIn;
+      if (needsLogin || (session.isSignedIn && !session.isOnboarded)) {
         pending.save(link);
-        router.go('/login');
-        return log('pending_auth');
-      }
-      if (session.isSignedIn && !session.isOnboarded) {
-        pending.save(link);
-        router.go('/onboarding');
-        return log('pending_onboarding');
+        router.go(needsLogin ? '/login' : '/onboarding');
+        return log(needsLogin ? 'pending_auth' : 'pending_onboarding');
       }
       final portal = t.portalId;
       if (portal != null && portal != session.activePortalId) {
@@ -814,10 +786,8 @@ class DeepLinkCoordinator {
       log('routed');
     } finally {
       _busy = false;
-      if (pending.hasPending && _ready && session.isSignedIn && session.isOnboarded) {
-        final next = pending.take();
-        if (next != null) unawaited(_handle(next));
-      }
+      final next = (_ready && session.isSignedIn && session.isOnboarded) ? pending.take() : null;
+      if (next != null) unawaited(_handle(next));
     }
   }
 
@@ -831,9 +801,8 @@ class DeepLinkCoordinator {
       HomeLink() => '/home',
       MagicLoginLink() || UnknownLink() => '/home', // handled above
     };
-    // Same screen already showing? Do nothing.
+    // Same screen already showing? Do nothing. go() with nested routes synthesizes the back stack.
     if (router.routerDelegate.currentConfiguration.uri.toString() == location) return;
-    // go() with nested routes synthesizes the back stack (e.g. /shop below /shop/p/1).
     router.go(location);
   }
 }
@@ -904,13 +873,9 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final auth = AuthState();             // ChangeNotifier implementing SessionGate
   final router = buildRouter(auth);     // created once
-  final coordinator = DeepLinkCoordinator(
-    router: router,
-    session: auth,
+  final coordinator = DeepLinkCoordinator(router: router, session: auth, pending: PendingLinkStore(),
     parser: DeepLinkParser(allowedHosts: {'example.com', 'www.example.com'}, customScheme: 'com.example.myapp'),
-    pending: PendingLinkStore(),
-    analytics: (e, p) => debugPrint('$e $p'), // replace with your analytics
-  );
+    analytics: (e, p) => debugPrint('$e $p')); // replace with your analytics
   runApp(MaterialApp.router(routerConfig: router));
   unawaited(auth.restore());            // reads secure storage, then notifies
   await coordinator.start();

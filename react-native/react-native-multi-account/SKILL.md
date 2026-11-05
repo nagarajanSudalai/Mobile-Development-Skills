@@ -359,12 +359,8 @@ export interface Portal { id: PortalId; name: string; slug: string; role: string
   status: 'active' | 'suspended' | 'pendingInvite'; }
 export interface Tokens { accessToken: string; refreshToken: string; expiresAt: number; }
 
-export class ReauthRequiredError extends Error {
-  constructor(public accountId: AccountId) { super(`Re-auth required for ${accountId}`); this.name = 'ReauthRequiredError'; }
-}
-export class PortalAccessRevokedError extends Error {
-  constructor(public portalId: PortalId) { super(`No access to ${portalId}`); this.name = 'PortalAccessRevokedError'; }
-}
+export class ReauthRequiredError extends Error { constructor(public accountId: AccountId) { super(`Re-auth required for ${accountId}`); this.name = 'ReauthRequiredError'; } }
+export class PortalAccessRevokedError extends Error { constructor(public portalId: PortalId) { super(`No access to ${portalId}`); this.name = 'PortalAccessRevokedError'; } }
 ```
 
 ```ts
@@ -411,8 +407,7 @@ export const tokenStore = new TokenStore();
 
 ```ts
 // session/accountRegistry.ts
-const KEY = 'registry.v2';
-const INSTALL_FLAG = 'installed';
+const KEY = 'registry.v2', INSTALL_FLAG = 'installed';
 export const MAX_ACCOUNTS = 5;
 
 interface RegistryData { version: 2; accounts: AccountRecord[]; activeAccountId: AccountId | null; }
@@ -442,18 +437,9 @@ export class AccountRegistry {
     this.save();
   }
 
-  get accounts(): readonly AccountRecord[] { return this.data.accounts; }
-  get activeAccountId() { return this.data.activeAccountId; }
-  get canAdd() { return this.data.accounts.length < MAX_ACCOUNTS; }
-  ordered(): AccountRecord[] { return [...this.data.accounts].sort((a, b) => b.lastUsedAt - a.lastUsedAt); }
-  find(id: AccountId) { return this.data.accounts.find(a => a.id === id); }
-  // findByServerUser(userId, env), upsert(record), patch(id, partial), remove(id), subscribe(l):
-  // plain mutations of this.data followed by save().
-  setActive(id: AccountId | null, portalId?: PortalId | null) {
-    this.data.activeAccountId = id;
-    if (id) this.patch(id, { lastUsedAt: Date.now(), ...(portalId !== undefined && { lastPortalId: portalId }) });
-    this.save();
-  }
+  // Getters/mutators: accounts, activeAccountId, canAdd (< MAX_ACCOUNTS), ordered() (lastUsedAt desc),
+  // find(id), findByServerUser(userId, env), upsert, patch, remove, subscribe — each mutation calls save().
+  // setActive(id, portalId?) also stamps lastUsedAt and lastPortalId.
 
   private save() { globalStorage.set(KEY, JSON.stringify(this.data)); /* notify subscribers */ }
 }
@@ -492,11 +478,8 @@ async function refreshTokens(id: AccountId): Promise<Tokens> {
     // Plain axios: must not go through the authed interceptor.
     const { data } = await axios.post(`${account.baseUrl}/oauth/token`,
       { grant_type: 'refresh_token', refresh_token: current.refreshToken }, { timeout: 15_000 });
-    const next: Tokens = {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? current.refreshToken, // rotation
-      expiresAt: Date.now() + data.expires_in * 1000,
-    };
+    const next: Tokens = { accessToken: data.access_token, expiresAt: Date.now() + data.expires_in * 1000,
+      refreshToken: data.refresh_token ?? current.refreshToken }; // rotation-aware
     await tokenStore.set(id, next); // persist before anyone uses it
     return next;
   } catch (e) {
@@ -513,10 +496,7 @@ export const refreshCoordinator = new RefreshCoordinator(refreshTokens);
 
 type RetriableConfig = InternalAxiosRequestConfig & { _retried?: boolean };
 
-/**
- * Account-bound client. accountId (and optional portalId) are captured here,
- * never read from a global at send time.
- */
+/** Account-bound client: accountId (and optional portalId) captured here, never read from a global at send time. */
 export function createApiClient({ accountId, portalId, signal }: {
   accountId: AccountId; portalId?: PortalId; signal: AbortSignal; // signal aborted on session teardown
 }): AxiosInstance {
@@ -567,17 +547,8 @@ export class AccountSession {
   storage!: MMKV;
   portals: Portal[] = [];
   private closed = false;
-
-  private constructor(readonly accountId: AccountId) {}
-
-  static async open(accountId: AccountId): Promise<AccountSession> {
-    const s = new AccountSession(accountId);
-    s.storage = await openAccountStorage(accountId);
-    s.api = createApiClient({ accountId, signal: s.abort.signal });
-    const cached = s.storage.getString('portals');
-    if (cached) s.portals = JSON.parse(cached);
-    return s;
-  }
+  // static open(accountId): openAccountStorage, createApiClient({ accountId, signal: abort.signal }),
+  // load cached 'portals' from MMKV for an instant start.
 
   // refreshPortals(): GET /me/portals; ignore the result if closed; cache JSON in storage 'portals'.
 
@@ -588,10 +559,7 @@ export class AccountSession {
       ?? null;
   }
 
-  close() {
-    this.closed = true;
-    this.abort.abort(); // cancels every request created by this account's clients
-  }
+  close() { this.closed = true; this.abort.abort(); } // cancels every request of this account's clients
 }
 
 // Portal-scoped client state, e.g. { selectedThreadId, composerDraft, setSelectedThread, setDraft }.
@@ -610,16 +578,8 @@ export class PortalSession {
     account.abort.signal.addEventListener('abort', () => this.abort.abort());
     this.api = createApiClient({ accountId: account.accountId, portalId, signal: this.abort.signal });
 
-    this.queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          staleTime: 30_000,
-          gcTime: 24 * 60 * 60_000,
-          retry: (count, err) =>
-            !(err instanceof PortalAccessRevokedError) && (err as any)?.response?.status !== 403 && count < 2,
-        },
-      },
-    });
+    this.queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: 24 * 60 * 60_000,
+      retry: (n, err) => !(err instanceof PortalAccessRevokedError) && (err as any)?.response?.status !== 403 && n < 2 } } });
     this.queryClient.getQueryCache().subscribe(e => {
       if (e.type === 'updated' && e.query.state.error instanceof PortalAccessRevokedError) onRevoked(portalId);
     });
@@ -727,12 +687,8 @@ export class SessionManager {
       const wasActive = this.account?.accountId === id;
       registry.patch(id, { state: 'removing' }); // crash-safe: load() finishes removal
 
-      if (wasActive) {
-        await this.portal?.close();
-        this.account?.close();
-        this.portal = null;
-        this.account = null;
-      }
+      if (wasActive) { await this.portal?.close(); this.account?.close(); this.portal = null; this.account = null; }
+      // Use THIS account's credentials for unregister + revoke, bounded to 3 s, before deleting them.
       await Promise.race([
         Promise.allSettled([pushRegistry.unregisterAccount(id), this.revokeOnServer(id)]),
         new Promise(r => setTimeout(r, 3000)),
@@ -749,10 +705,8 @@ export class SessionManager {
 
       const next = registry.ordered().find(a => a.state === 'active');
       if (!wasActive) return this.notify();
-      if (next) {
-        // re-enter queue after this task finishes
-        void this.switchAccount(next.id);
-      } else {
+      if (next) void this.switchAccount(next.id); // re-enters the queue after this task finishes
+      else {
         registry.setActive(null);
         await Purchases.logOut().catch(() => {});
         Sentry.setUser(null);
@@ -799,19 +753,15 @@ export function PortalSessionBoundary({ children }: { children: React.ReactNode 
   useActiveKey(); // re-render on change
   const portal = sessionManager.portal;
   if (!portal) return null;
-  const key = `${portal.account.accountId}:${portal.portalId}`;
   return (
-    <PortalCtx.Provider value={portal} key={key}>
-      <PersistQueryClientProvider
-        client={portal.queryClient}
-        persistOptions={{ persister: portal.persister, maxAge: 24 * 60 * 60_000, buster: APP_VERSION }}
-      >
+    <PortalCtx.Provider value={portal} key={`${portal.account.accountId}:${portal.portalId}`}>
+      <PersistQueryClientProvider client={portal.queryClient}
+        persistOptions={{ persister: portal.persister, maxAge: 24 * 60 * 60_000, buster: APP_VERSION }}>
         {children}
       </PersistQueryClientProvider>
     </PortalCtx.Provider>
   );
 }
-declare const APP_VERSION: string;
 ```
 
 Query keys can stay portal-relative (`['threads', filters]`) because each portal session has its own `QueryClient`. If you keep one shared client instead, prefix every key: `['a', accountId, 'p', portalId, 'threads', filters]` and remove with `queryClient.removeQueries({ queryKey: ['a', accountId] })` on switch.
@@ -824,13 +774,9 @@ const Root = createNativeStackNavigator<RootParams>();
 export default function App() {
   const state = useSessionState();
   const key = useActiveKey();
-
   useEffect(() => { void sessionManager.start(); }, []);
 
-  if (state.kind === 'switching') return <SwitchingOverlay accountId={state.to} />;
-  if (state.kind === 'loggedOut') return <LoggedOutNavigator />;
-  if (state.kind === 'needsReauth') return <ReauthScreen accountId={state.accountId} />;
-  if (state.kind === 'noPortal') return <NoPortalScreen accountId={state.accountId} />;
+  if (state.kind !== 'idle') return <SessionGate state={state} />; // switching overlay / logged out / reauth / no portal
 
   return (
     <PortalSessionBoundary>
@@ -869,11 +815,7 @@ class LinkRouter {
   private ready = false;
 
   attach(navigate: Navigate) { this.navigate = navigate; }
-  flushPending() {
-    this.ready = true;
-    const p = this.pending; this.pending = null;
-    if (p) void this.handle(p, { userInitiated: true });
-  }
+  flushPending() { this.ready = true; const p = this.pending; this.pending = null; if (p) void this.handle(p, { userInitiated: true }); }
 
   /** Accounts on this device that can open the target: state 'active', matching userId if given,
    *  and (if a portal id/slug is given) that portal in the account's cached 'portals' list. */

@@ -396,20 +396,13 @@ class HeadersInterceptor(private val env: ApiEnvironment) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val req = chain.request().newBuilder()
             .header("User-Agent", "MyApp/${env.appVersion} (Android ${Build.VERSION.RELEASE})")
-            .header("Accept-Language", Locale.getDefault().toLanguageTag())
-            .header("X-App-Version", env.appVersion)
-            .header("X-Request-Id", UUID.randomUUID().toString())
-            .build()
+            .header("Accept-Language", Locale.getDefault().toLanguageTag()).header("X-App-Version", env.appVersion)
+            .header("X-Request-Id", UUID.randomUUID().toString()).build()
         return chain.proceed(req)
     }
 }
 
-class AuthInterceptor(private val tokens: TokenManager) : Interceptor {
-    override fun intercept(chain: Interceptor.Chain): Response {
-        val token = tokens.currentAccessToken() ?: return chain.proceed(chain.request())
-        return chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer $token").build())
-    }
-}
+// AuthInterceptor(tokens): adds "Authorization: Bearer ${tokens.currentAccessToken()}" when a token exists.
 
 /** Key is generated once per logical operation and passed as a request tag. */
 data class IdempotencyKey(val value: String)
@@ -417,8 +410,7 @@ data class IdempotencyKey(val value: String)
 class IdempotencyKeyInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val key = chain.request().tag(IdempotencyKey::class.java) ?: return chain.proceed(chain.request())
-        return chain.proceed(chain.request().newBuilder().header("Idempotency-Key", key.value).build())
-    }
+        return chain.proceed(chain.request().newBuilder().header("Idempotency-Key", key.value).build()) }
 }
 
 class TokenAuthenticator(private val tokens: TokenManager) : Authenticator {
@@ -442,10 +434,7 @@ class TokenManager(private val store: TokenStore, private val refreshApi: Refres
         return try {
             val r = refreshApi.refresh(RefreshBody(refresh))
             store.save(r.accessToken, r.refreshToken); r.accessToken
-        } catch (e: HttpException) {
-            if (e.code() in 400..401) store.markNeedsReauth()      // invalid_grant
-            null
-        } catch (e: IOException) { null }                          // offline: keep tokens
+        } catch (e: HttpException) { if (e.code() in 400..401) store.markNeedsReauth(); null }  // invalid_grant catch (e: IOException) { null }                          // offline: keep tokens
     }
 }
 
@@ -481,11 +470,9 @@ object NetworkModule {
 ```kotlin
 sealed class AppError(cause: Throwable? = null) : Exception(cause) {
     data object Offline : AppError(); data object Timeout : AppError()
-    class Tls(c: Throwable) : AppError(c)
+    class Tls(c: Throwable) : AppError(c); class Decoding(c: Throwable) : AppError(c); class Unknown(c: Throwable) : AppError(c)
     class Http(val code: Int, val serverCode: String?, val retryAfterMs: Long?, val body: String?) : AppError()
-    class Decoding(c: Throwable) : AppError(c)
     data object NeedsReauth : AppError()
-    class Unknown(c: Throwable) : AppError(c)
 
     val isRetryable: Boolean get() = when (this) {
         Offline, Timeout -> true
@@ -511,11 +498,9 @@ fun Throwable.toAppError(json: Json): AppError = when (this) {
     else -> AppError.Unknown(this)
 }
 
-fun parseRetryAfter(v: String?): Long? = v?.let {
-    it.toLongOrNull()?.times(1000) ?: runCatching {
-        (ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
-            - System.currentTimeMillis()).coerceAtLeast(0)
-    }.getOrNull()
+fun parseRetryAfter(v: String?): Long? = v?.let {                 // delta-seconds or RFC 1123 HTTP-date
+    it.toLongOrNull()?.times(1000) ?: runCatching { (ZonedDateTime.parse(it, DateTimeFormatter.RFC_1123_DATE_TIME)
+        .toInstant().toEpochMilli() - System.currentTimeMillis()).coerceAtLeast(0) }.getOrNull()
 }
 
 /** Retries only when the caller says the operation is idempotent (GET, or POST with Idempotency-Key). */
@@ -526,12 +511,10 @@ suspend fun <T> withRetry(
     var attempt = 0
     while (true) {
         try { return block() } catch (t: Throwable) {
-            val err = t.toAppError(json)
-            attempt++
+            val err = t.toAppError(json); attempt++
             if (!idempotent || !err.isRetryable || attempt >= maxAttempts) throw err
             val backoff = random.nextLong(0, minOf(capMs, baseMs shl attempt) + 1)   // full jitter
-            val retryAfter = (err as? AppError.Http)?.retryAfterMs
-            delay(retryAfter?.coerceAtMost(capMs) ?: backoff)
+            delay((err as? AppError.Http)?.retryAfterMs?.coerceAtMost(capMs) ?: backoff)
         }
     }
 }
@@ -572,11 +555,9 @@ enum class OutboxState { PENDING, IN_FLIGHT, FAILED_RETRYABLE, FAILED_PERMANENT,
 @Entity(tableName = "outbox", indices = [Index("entityId"), Index("state")])
 data class OutboxEntry(
     @PrimaryKey(autoGenerate = true) val seq: Long = 0,
-    val entityType: String, val entityId: String, val op: OutboxOp,
-    val payload: String, val payloadVersion: Int = 1,
+    val entityType: String, val entityId: String, val op: OutboxOp, val payload: String, val payloadVersion: Int = 1,
     val idempotencyKey: String = UUID.randomUUID().toString(),
-    val state: OutboxState = OutboxState.PENDING,
-    val attempts: Int = 0, val lastError: String? = null,
+    val state: OutboxState = OutboxState.PENDING, val attempts: Int = 0, val lastError: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -626,20 +607,17 @@ abstract class AppDatabase : RoomDatabase() {
 
 ```kotlin
 class TaskRepository @Inject constructor(
-    private val db: AppDatabase,
-    private val json: Json,
-    private val syncScheduler: SyncScheduler,
+    private val db: AppDatabase, private val json: Json, private val syncScheduler: SyncScheduler,
 ) {
     val tasks: Flow<List<Task>> = db.tasks().observeAll().map { list -> list.map { it.toDomain() } }
     val pendingCount: Flow<Int> = db.outbox().observeCount()
 
     suspend fun create(title: String) {
         val id = UUID.randomUUID().toString()
-        db.withTransaction {
+        db.withTransaction {                                         // entity + outbox row in one transaction
             db.tasks().upsert(listOf(TaskEntity(id, title, false, serverVersion = 0, localState = LocalState.PENDING)))
-            val dto = TaskDto(id, title, false, 0, "")
             db.outbox().insert(OutboxEntry(entityType = "task", entityId = id, op = OutboxOp.CREATE,
-                payload = json.encodeToString(dto)))
+                payload = json.encodeToString(TaskDto(id, title, false, 0, ""))))
         }
         syncScheduler.kickOutbox(expedited = true)
     }
@@ -676,10 +654,7 @@ class OutboxProcessor @Inject constructor(
     suspend fun drain(): RunResult = mutex.withLock {
         db.outbox().resetInFlight()                                  // crash recovery: resend with same key
         var result: RunResult = RunResult.Done
-        while (result == RunResult.Done) {
-            val e = db.outbox().nextReady() ?: break
-            result = process(e)
-        }
+        while (result == RunResult.Done) { result = process(db.outbox().nextReady() ?: break) }
         result
     }
 
@@ -697,9 +672,7 @@ class OutboxProcessor @Inject constructor(
         } catch (t: Throwable) {
             val err = t.toAppError(json)
             when {
-                err is AppError.NeedsReauth -> {
-                    db.outbox().update(e.copy(state = OutboxState.PENDING)); RunResult.NeedsReauth
-                }
+                err is AppError.NeedsReauth -> { db.outbox().update(e.copy(state = OutboxState.PENDING)); RunResult.NeedsReauth }
                 err is AppError.Http && (err.code == 409 || err.code == 412) -> { markConflict(e, err); RunResult.Done }
                 err.isRetryable -> {                                 // keep order: stop, let WorkManager back off
                     db.outbox().update(e.copy(state = OutboxState.FAILED_RETRYABLE,
@@ -721,23 +694,17 @@ class OutboxProcessor @Inject constructor(
         val key = IdempotencyKey(e.idempotencyKey)
         return when (e.op) {
             OutboxOp.CREATE -> api.create(e.entityId, json.decodeFromString(e.payload), key)
-            OutboxOp.PATCH -> {
-                val base = db.tasks().get(e.entityId)?.serverVersion ?: 0
-                api.patch(e.entityId, base, json.decodeFromString(e.payload), key)
-            }
+            OutboxOp.PATCH -> api.patch(e.entityId, db.tasks().get(e.entityId)?.serverVersion ?: 0, json.decodeFromString(e.payload), key)
             OutboxOp.DELETE -> {
                 val r = api.delete(e.entityId, key)
-                if (!r.isSuccessful && r.code() != 404) throw HttpException(r)  // already gone = success
-                null
+                if (!r.isSuccessful && r.code() != 404) throw HttpException(r); null  // 404: already gone = success
             }
         }
     }
 
     private suspend fun markConflict(e: OutboxEntry, err: AppError.Http) = db.withTransaction {
         db.outbox().update(e.copy(state = OutboxState.CONFLICT, lastError = "conflict"))
-        db.tasks().get(e.entityId)?.let {
-            db.tasks().upsert(listOf(it.copy(localState = LocalState.CONFLICT, serverSnapshot = err.body)))
-        }
+        db.tasks().get(e.entityId)?.let { db.tasks().upsert(listOf(it.copy(localState = LocalState.CONFLICT, serverSnapshot = err.body))) }
     }
 }
 ```
@@ -776,21 +743,10 @@ class SyncEngine @Inject constructor(
         } while (page.hasMore)
     }
 
-    /** Cursor expired (410): rebuild from snapshot, keeping entities with pending outbox entries. */
-    private suspend fun fullResync(collection: String) {
-        val all = mutableListOf<TaskDto>(); var cursor: String? = null
-        do {
-            val page = withRetry(json, idempotent = true) { api.pull(cursor) }
-            all += page.changes; cursor = page.nextCursor
-        } while (page.hasMore)
-        db.withTransaction {
-            val pending = db.outbox().pendingEntityIds().toSet()
-            val keep = pending.mapNotNull { db.tasks().get(it) }
-            db.tasks().deleteAll()
-            db.tasks().upsert(all.filter { it.id !in pending }.map { it.toEntity(LocalState.SYNCED) } + keep)
-            db.syncState().put(SyncState(collection, cursor, System.currentTimeMillis()))
-        }
-    }
+    /** Cursor expired (410): page through a full snapshot with cursor = null, then in ONE transaction
+     *  deleteAll() + upsert snapshot rows (minus entities with pending outbox entries, which are kept as-is)
+     *  and store the new cursor. */
+    private suspend fun fullResync(collection: String) { /* as described above */ }
 }
 ```
 
@@ -827,8 +783,7 @@ class SyncWorker @AssistedInject constructor(
     }
 
     override suspend fun getForegroundInfo(): ForegroundInfo =                // expedited fallback < API 31
-        ForegroundInfo(NOTIF_ID, syncNotification(applicationContext),
-            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
+        ForegroundInfo(NOTIF_ID, syncNotification(applicationContext), if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0)
 
     companion object { const val KEY_ACCOUNT = "accountId"; private const val NOTIF_ID = 4201 }
 }
@@ -841,11 +796,9 @@ class SyncScheduler @Inject constructor(
     private fun data() = workDataOf(SyncWorker.KEY_ACCOUNT to accountId)
 
     fun kickOutbox(expedited: Boolean) {
-        val req = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setConstraints(constraints).setInputData(data())
+        val req = OneTimeWorkRequestBuilder<SyncWorker>().setConstraints(constraints).setInputData(data())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .apply { if (expedited) setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST) }
-            .build()
+            .apply { if (expedited) setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST) }.build()
         wm.enqueueUniqueWork("sync-$accountId", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
     }
 

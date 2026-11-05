@@ -49,16 +49,11 @@ One rule carries most of the design: **every entry point produces a `Uri` (or ty
 Find out (from the codebase or by asking):
 
 - **Link types in use**: verified App Links (`https`), custom scheme (`myapp://`), both? Any links from a former vendor/Firebase Dynamic Links (`*.page.link`, short links on a vendor domain) still in the wild?
-- **Domains**: which hosts (`example.com`, `www.example.com`, `m.example.com`, `links.example.com`, regional ccTLDs)? Who controls the web server / CDN for each? Is there a website at those URLs for people without the app?
-- **Build variants**: package names per flavor (`com.example.app`, `.debug`, `.staging`) and which signing keys exist (debug, upload, **Play App Signing** key, any third-party store key).
-- **Router**: Navigation Compose (string routes or type-safe `@Serializable` routes, Navigation 2.8+), Navigation with Fragments, a custom back stack, or multiple activities? Single-activity?
-- **Destinations**: list every linkable screen and whether it requires **login**, **onboarding/consent**, **a specific account or portal**, an **entitlement** (subscription), or a **feature flag**.
-- **Logged-out behaviour**: show a public preview, require login then continue, or open the Play Store listing / web page?
-- **Multi-account**: can several accounts or portals be signed in (see **android-multi-account**)? Do links carry an account/portal identifier?
-- **Deferred deep links**: needed? (Install campaigns, referral invites, "open this item after install".) Is there an existing attribution SDK?
-- **Other entry points**: push (FCM data/notification payloads), widgets (Glance/AppWidget), app shortcuts (static/dynamic/pinned), QR codes, NFC, OAuth/SSO redirects, email campaigns with click tracking, App Actions/Assistant.
-- **minSdk / targetSdk** — verification behaviour differs before and after API 31.
-- **Analytics**: what attribution is expected (UTM, campaign id, referral code)?
+- **Domains**: which hosts (`example.com`, `www.example.com`, `m.example.com`, `links.example.com`, regional ccTLDs)? Who controls the web server / CDN for each? Is there a website at those URLs for people without the app?; **Build variants**: package names per flavor (`com.example.app`, `.debug`, `.staging`) and which signing keys exist (debug, upload, **Play App Signing** key, any third-party store key).
+- **Router**: Navigation Compose (string routes or type-safe `@Serializable` routes, Navigation 2.8+), Navigation with Fragments, a custom back stack, or multiple activities? Single-activity?; **Destinations**: list every linkable screen and whether it requires **login**, **onboarding/consent**, **a specific account or portal**, an **entitlement** (subscription), or a **feature flag**.
+- **Logged-out behaviour**: show a public preview, require login then continue, or open the Play Store listing / web page?; **Multi-account**: can several accounts or portals be signed in (see **android-multi-account**)? Do links carry an account/portal identifier?
+- **Deferred deep links**: needed? (Install campaigns, referral invites, "open this item after install".) Is there an existing attribution SDK?; **Other entry points**: push (FCM data/notification payloads), widgets (Glance/AppWidget), app shortcuts (static/dynamic/pinned), QR codes, NFC, OAuth/SSO redirects, email campaigns with click tracking, App Actions/Assistant.
+- **minSdk / targetSdk** — verification behaviour differs before and after API 31.; **Analytics**: what attribution is expected (UTM, campaign id, referral code)?
 
 Write a **link contract** before coding:
 
@@ -160,8 +155,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 
 ### 6.1 Parse → typed model → route
 
-- [ ] `DeepLinkParser.parse(uri): DeepLink?` — pure Kotlin, no Android framework beyond `Uri` (or use `java.net.URI` for JVM tests), returns a **sealed type** (`DeepLink.Product(id)`, `DeepLink.Order(id)`, `DeepLink.Unknown(uri)`). Validate each param (regex/length/charset) in the parser; invalid → `Unknown`, never a crash.
-- [ ] Accept every **host alias** (`example.com`, `www.`, `m.`) and the custom scheme equivalents in one place. Router maps `DeepLink` → navigation action, given current state (auth, account, current back stack).
+- [ ] `DeepLinkParser.parse(uri): DeepLink?` — pure Kotlin, no Android framework beyond `Uri` (or use `java.net.URI` for JVM tests), returns a **sealed type** (`DeepLink.Product(id)`, `DeepLink.Order(id)`, `DeepLink.Unknown(uri)`). Validate each param (regex/length/charset) in the parser; invalid → `Unknown`, never a crash. Accept every **host alias** (`example.com`, `www.`, `m.`) and the custom scheme equivalents in one place. Router maps `DeepLink` → navigation action, given current state (auth, account, current back stack).
 
 ### 6.2 Stack rules
 
@@ -182,17 +176,14 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 
 ### 7.1 Cold / warm / foreground
 
-- [ ] Cold: parse in `onCreate`, hand to ViewModel, route once `AppState` is `Ready`. Warm: `onNewIntent` → same path. Test with the app in Recents and with the activity destroyed by "Don't keep activities".
-- [ ] Foreground: link while the user is mid-task — apply §6.2 (modal dismissal, flow protection).
+- [ ] Cold: parse in `onCreate`, hand to ViewModel, route once `AppState` is `Ready`. Warm: `onNewIntent` → same path. Test with the app in Recents and with the activity destroyed by "Don't keep activities". Foreground: link while the user is mid-task — apply §6.2 (modal dismissal, flow protection).
 - [ ] Links must be **idempotent**: processing twice (rotation, restore) must not create two orders/accept an invite twice. Stale intents: ignore `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`; optionally ignore links older than N minutes when restored.
 
 ### 7.2 Before login / onboarding
 
 - [ ] Link requires auth and user is logged out → **store a pending link** (in memory + `SavedStateHandle`, and DataStore if login can span process death, e.g. email magic link or browser-based SSO), show login, **resume** after success.
 - [ ] Same for onboarding, consent (GDPR/ATT-equivalent prompts), forced update, and "select portal" screens — the pending link survives all of them.
-- [ ] Pending link has a **TTL** (e.g. 30 minutes – 24 hours) and is **single-use**; cleared on consume, on sign-out, and on explicit back-out of login. Only one pending link — newest wins.
-- [ ] Public destinations (product page) should **not** require login; render a public preview and gate actions. If after login the link resolves to a different account than expected → §8.
-- [ ] Never put the user on a blank screen while waiting: show the login screen with context ("Sign in to view your order").
+- [ ] Pending link has a **TTL** (e.g. 30 minutes – 24 hours) and is **single-use**; cleared on consume, on sign-out, and on explicit back-out of login. Only one pending link — newest wins. Public destinations (product page) should **not** require login; render a public preview and gate actions. If after login the link resolves to a different account than expected → §8. Never put the user on a blank screen while waiting: show the login screen with context ("Sign in to view your order").
 
 ### 7.3 Links during modals and critical flows
 
@@ -205,8 +196,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
   - Belongs to another **signed-in** account/portal → **confirm**: "Switch to Acme workspace to view this task?" → run the account/portal switch flow → then navigate.
   - Belongs to no signed-in account → offer "Sign in to another account" with the pending link preserved.
   - Unknown (server says 403/404) → generic "You don't have access / link not found" — **don't reveal** whether the item exists in another org.
-- [ ] Resolution may need an API call (`GET /links/resolve?url=`) when the path doesn't carry the account; show a lightweight loading screen, time out to a fallback.
-- [ ] Never switch accounts **silently** from a link — a malicious link could otherwise move the user into an attacker-controlled account (account-confusion phishing). Invite links (`/invite/{code}`): accept into the **chosen** account, explicitly shown to the user.
+- [ ] Resolution may need an API call (`GET /links/resolve?url=`) when the path doesn't carry the account; show a lightweight loading screen, time out to a fallback. Never switch accounts **silently** from a link — a malicious link could otherwise move the user into an attacker-controlled account (account-confusion phishing). Invite links (`/invite/{code}`): accept into the **chosen** account, explicitly shown to the user.
 
 ## 9. Deferred deep links (vendor-neutral)
 
@@ -227,21 +217,17 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 ### 9.2 Evaluation criteria (any vendor or in-house)
 
 - [ ] Uses Install Referrer as the primary Android signal; fingerprinting off or opt-in. Links on **your own domain** (custom domain support), so you keep them if you switch vendors — the Firebase Dynamic Links shutdown stranded every `*.page.link` link.
-- [ ] Export of all links/aliases; ability to redirect old links.
-- [ ] Data safety / privacy: what is collected (advertising ID, IP), retention, consent integration, region data residency. Works with verified App Links (doesn't wrap links in a redirect domain that kills verification).
-- [ ] SDK size, startup cost (no blocking network on main thread at launch), and failure behaviour (app works if the service is down). Attribution windows, fraud protection, raw event export.
+- [ ] Export of all links/aliases; ability to redirect old links. Data safety / privacy: what is collected (advertising ID, IP), retention, consent integration, region data residency. Works with verified App Links (doesn't wrap links in a redirect domain that kills verification). SDK size, startup cost (no blocking network on main thread at launch), and failure behaviour (app works if the service is down). Attribution windows, fraud protection, raw event export.
 
 ### 9.3 Firebase Dynamic Links migration (shut down 25 Aug 2025)
 
 - [ ] Inventory every FDL link: printed QR codes, emails, partner integrations, `*.page.link` and custom-domain FDL links. Old `page.link` links **no longer resolve** — reprint/replace what you can; for custom domains you still control, serve redirects to the new links.
-- [ ] Replace with: verified App Links on your domain + web landing page + Play Install Referrer for deferred links (+ any vendor meeting §9.2).
-- [ ] Remove the `firebase-dynamic-links` dependency and `FirebaseDynamicLinks.getInstance().getDynamicLink(intent)` calls; route `intent.data` through your parser. Map FDL params (`link=`, `apn`, `afl`, `utm_*`) to your new URL design; keep the parser accepting old long-link query shapes if any are still reachable via your redirects.
+- [ ] Replace with: verified App Links on your domain + web landing page + Play Install Referrer for deferred links (+ any vendor meeting §9.2). Remove the `firebase-dynamic-links` dependency and `FirebaseDynamicLinks.getInstance().getDynamicLink(intent)` calls; route `intent.data` through your parser. Map FDL params (`link=`, `apn`, `afl`, `utm_*`) to your new URL design; keep the parser accepting old long-link query shapes if any are still reachable via your redirects.
 - [ ] Email verification / passwordless sign-in links that used FDL (Firebase Auth) need the current Firebase Auth replacement (Hosting-based links) — check current Firebase docs.
 
 ### 9.4 Deferred link app behaviour
 
-- [ ] First launch: run onboarding as normal, but carry the deferred link as a **pending link** (§7.2) and route after onboarding/login.
-- [ ] Offer, don't force: "Continue to *Spring Sale*?" is fine; dropping a brand-new user deep into a screen without context is not. Never treat a deferred link as more trusted than a normal link (same parser, same validation).
+- [ ] First launch: run onboarding as normal, but carry the deferred link as a **pending link** (§7.2) and route after onboarding/login. Offer, don't force: "Continue to *Spring Sale*?" is fine; dropping a brand-new user deep into a screen without context is not. Never treat a deferred link as more trusted than a normal link (same parser, same validation).
 
 ## 10. Other entry points
 
@@ -249,15 +235,13 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 - [ ] **Widgets** (Glance `actionStartActivity` / RemoteViews `setOnClickPendingIntent`): same — explicit intent with `data = uri`; distinct `data` or request code per item.
 - [ ] **App shortcuts** (static `shortcuts.xml`, `ShortcutManagerCompat` dynamic/pinned): `Intent(ACTION_VIEW, uri)` targeting `MainActivity`; pinned shortcuts live forever — the route must keep working or fall back. **App Actions / Assistant**: map capabilities to the same URIs.
 - [ ] **QR codes**: encode **https App Links** on your domain (work with or without the app); keep them short; never encode custom schemes.
-- [ ] **Email click tracking**: ESPs rewrite links to a tracking domain (`click.esp.com/...`) that 302-redirects. The first URL isn't yours → **browser opens, App Link doesn't trigger** (Chrome usually doesn't hand off after a redirect chain started in an email app's webview). Fixes: use a **branded tracking subdomain you control** (`email.example.com`) with its own `assetlinks.json` and a manifest filter; the app then receives the tracking URL, logs/forwards the click, and resolves the destination (follow the redirect via a HEAD/GET or parse a known param). Or disable click tracking for deep-linked CTAs.
-- [ ] **In-app browsers** (social apps' webviews) often won't open App Links; the web page should show an "Open in app" button that uses the same https link (user gesture) and a Play Store fallback.
+- [ ] **Email click tracking**: ESPs rewrite links to a tracking domain (`click.esp.com/...`) that 302-redirects. The first URL isn't yours → **browser opens, App Link doesn't trigger** (Chrome usually doesn't hand off after a redirect chain started in an email app's webview). Fixes: use a **branded tracking subdomain you control** (`email.example.com`) with its own `assetlinks.json` and a manifest filter; the app then receives the tracking URL, logs/forwards the click, and resolves the destination (follow the redirect via a HEAD/GET or parse a known param). Or disable click tracking for deep-linked CTAs. **In-app browsers** (social apps' webviews) often won't open App Links; the web page should show an "Open in app" button that uses the same https link (user gesture) and a Play Store fallback.
 - [ ] **OAuth / SSO redirects**: use AppAuth (Custom Tabs) with either a verified https redirect or a unique custom scheme; validate `state` and PKCE; handle the redirect in a dedicated `RedirectUriReceiverActivity` (AppAuth) or the router's "result" path, never as a navigation destination. Payment/3DS returns: same. **NFC / Nearby / Android Beam replacements**: NDEF URI records → same https links.
 
 ## 11. Fallbacks
 
 - [ ] **App not installed**: the https URL must serve a real web page (content or landing page with Play Store link carrying `referrer`, §9).
-- [ ] **Unknown path** (`DeepLink.Unknown`): open the app at Home with a gentle message, or open the URL in a **Custom Tab** if it's a web-only page on your domain. Never a crash, never a blank screen. **Expired / revoked** (invite used, offer ended): dedicated screen with explanation and a next action.
-- [ ] **Removed routes** after an app update: keep parser support for old paths and map them to new destinations; maintain a test fixture of every link ever shipped. **Not found / no access** (API 404/403 after navigating): detail screen shows a not-found state with a way back — not an infinite spinner.
+- [ ] **Unknown path** (`DeepLink.Unknown`): open the app at Home with a gentle message, or open the URL in a **Custom Tab** if it's a web-only page on your domain. Never a crash, never a blank screen. **Expired / revoked** (invite used, offer ended): dedicated screen with explanation and a next action. **Removed routes** after an app update: keep parser support for old paths and map them to new destinations; maintain a test fixture of every link ever shipped. **Not found / no access** (API 404/403 after navigating): detail screen shows a not-found state with a way back — not an infinite spinner.
 - [ ] **Older app version** receiving a link for a feature it doesn't have: `Unknown` → Home + "Update the app to open this" with Play Store link (optionally use in-app updates). **Feature flag off / region unavailable**: graceful screen, not a crash. Links your app claims but shouldn't (over-broad filter) → narrow the filter; as a stopgap open them in a Custom Tab.
 
 ## 12. Security
@@ -267,14 +251,11 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 - [ ] **Open redirect**: never load a URL from a param (`?next=https://evil.com`, `?url=`) into a WebView or Custom Tab without an allowlist of your hosts. Never forward link params into a WebView with JavaScript bridges (`addJavascriptInterface`).
 - [ ] Don't accept file/content URIs, `intent:` URIs or nested `Intent` extras from links (intent redirection — Play's security scanner flags `getParcelableExtra<Intent>()` → `startActivity`).
 - [ ] **Custom scheme hijacking**: another app can register your scheme → never send secrets (auth codes without PKCE, tokens, magic-link codes) via custom schemes; use verified https or PKCE.
-- [ ] No **tokens, emails, or PII** in URLs (they end up in logs, analytics, referrers, browser history). Magic-link/email-verify tokens: single-use, short TTL, bound to the requesting device/session where possible, exchanged server-side. Account-scoped links never switch accounts silently (§8).
-- [ ] Keep other activities **`exported="false"`**; only the entry activity is exported. Rate-limit and log suspicious resolution failures server-side. `PendingIntent` for push/widgets: `FLAG_IMMUTABLE` + explicit component.
+- [ ] No **tokens, emails, or PII** in URLs (they end up in logs, analytics, referrers, browser history). Magic-link/email-verify tokens: single-use, short TTL, bound to the requesting device/session where possible, exchanged server-side. Account-scoped links never switch accounts silently (§8). Keep other activities **`exported="false"`**; only the entry activity is exported. Rate-limit and log suspicious resolution failures server-side. `PendingIntent` for push/widgets: `FLAG_IMMUTABLE` + explicit component.
 
 ## 13. Analytics
 
-- [ ] Log a **`deep_link_opened`** event: source (`app_link`, `custom_scheme`, `push`, `widget`, `shortcut`, `qr`, `deferred`), normalized path pattern (`/orders/{id}`, not the raw id), launch state (cold/warm/foreground), result (`routed`, `pending_auth`, `account_switch`, `unknown`, `not_found`). Capture **UTM** and campaign params from the URL, then strip them before routing.
-- [ ] Deferred installs: log `install_referrer_received` with the token/campaign and `referrerClickTimestampSeconds` → install latency. Track **funnel**: opened → routed → pending → resumed after login → content viewed. Use `Activity.getReferrer()` (best effort, spoofable) only as a hint, never for security.
-- [ ] Respect consent: attribution params are personal data in some regions; gate analytics accordingly; no raw URLs with ids/PII in analytics. Monitor `deep_link_opened` with `result=unknown` per app version — catches marketing links pointing at paths the app doesn't parse.
+- [ ] Log a **`deep_link_opened`** event: source (`app_link`, `custom_scheme`, `push`, `widget`, `shortcut`, `qr`, `deferred`), normalized path pattern (`/orders/{id}`, not the raw id), launch state (cold/warm/foreground), result (`routed`, `pending_auth`, `account_switch`, `unknown`, `not_found`). Capture **UTM** and campaign params from the URL, then strip them before routing. Deferred installs: log `install_referrer_received` with the token/campaign and `referrerClickTimestampSeconds` → install latency. Track **funnel**: opened → routed → pending → resumed after login → content viewed. Use `Activity.getReferrer()` (best effort, spoofable) only as a hint, never for security. Respect consent: attribution params are personal data in some regions; gate analytics accordingly; no raw URLs with ids/PII in analytics. Monitor `deep_link_opened` with `result=unknown` per app version — catches marketing links pointing at paths the app doesn't parse.
 
 ## 14. Testing
 
@@ -354,25 +335,17 @@ adb shell am kill com.example.app
 ## 15. Common bugs to look for in review
 
 - `assetlinks.json` lists only the **upload/debug** fingerprint, not the Play App Signing key → works in dev, browser in production
-- File behind a redirect (apex → www, http → https), a WAF/bot challenge, auth, or served as `text/html` by a SPA catch-all
-- `www.example.com` in the manifest but the file only on `example.com` (or vice versa)
-- `minSdk < 31` with one broken host → **all** hosts unverified on Android 11 and below
-- Missing `BROWSABLE` category or `android:autoVerify` placed on a filter that also contains a custom scheme
+- File behind a redirect (apex → www, http → https), a WAF/bot challenge, auth, or served as `text/html` by a SPA catch-all; `www.example.com` in the manifest but the file only on `example.com` (or vice versa)
+- `minSdk < 31` with one broken host → **all** hosts unverified on Android 11 and below; Missing `BROWSABLE` category or `android:autoVerify` placed on a filter that also contains a custom scheme
 - Several hosts/schemes/paths in one filter → unintended cross-product claims; claiming the entire host, so web-only pages (help, legal, password reset on web) open an app that can't render them
 - `onNewIntent` not overridden (or not calling `setIntent`) → warm links ignored or old link re-read later
-- Link handled in `onCreate` on every recreation → re-navigation on rotation; not checking `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` → stale replay from Recents
-- `launchMode="standard"` → new activity per link stacked in the browser's task
+- Link handled in `onCreate` on every recreation → re-navigation on rotation; not checking `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` → stale replay from Recents; `launchMode="standard"` → new activity per link stacked in the browser's task
 - Routing before session/DI ready → crash or login screen flashes then disappears
-- Pending link lost across login (kept only in a local `var`), never expired, or replayed after sign-out
-- Account-scoped link opened in the wrong account; silent account switch
-- Manifest filters and Navigation `deepLinks` out of sync; parser accepts paths the manifest doesn't claim (or vice versa)
-- String splitting instead of `Uri` APIs → broken on encoded chars; `utm_*` params treated as required args
-- Push `PendingIntent` with the same request code and no distinct `data` → every notification opens the last link; missing `FLAG_IMMUTABLE`; notification trampoline
-- No synthetic back stack → back from deep-linked detail exits the app
+- Pending link lost across login (kept only in a local `var`), never expired, or replayed after sign-out; Account-scoped link opened in the wrong account; silent account switch
+- Manifest filters and Navigation `deepLinks` out of sync; parser accepts paths the manifest doesn't claim (or vice versa); String splitting instead of `Uri` APIs → broken on encoded chars; `utm_*` params treated as required args
+- Push `PendingIntent` with the same request code and no distinct `data` → every notification opens the last link; missing `FLAG_IMMUTABLE`; notification trampoline; No synthetic back stack → back from deep-linked detail exits the app
 - WebView loading `?url=` param → open redirect / JS bridge exposure; destructive action executed directly from a link (`/unsubscribe`, `/accept`, `/pay`)
-- Install referrer read on every launch, read on the main thread blocking startup, or never ended (`endConnection`)
-- `firebase-dynamic-links` still in dependencies after the shutdown; QR codes still printing `page.link` URLs
-- No CI check on `assetlinks.json`; marketing site redeploy deletes it
+- Install referrer read on every launch, read on the main thread blocking startup, or never ended (`endConnection`); `firebase-dynamic-links` still in dependencies after the shutdown; QR codes still printing `page.link` URLs; No CI check on `assetlinks.json`; marketing site redeploy deletes it
 
 ## 16. Output format
 
@@ -600,12 +573,8 @@ data class LinkUri(
 ```kotlin
 package com.example.app.links
 
-import android.content.Context
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.first
+// Imports: Context; androidx.datastore.preferences.core.{edit, longPreferencesKey, stringPreferencesKey};
+// androidx.datastore.preferences.preferencesDataStore; kotlinx.coroutines.flow.first.
 
 private val Context.linkStore by preferencesDataStore(name = "pending_link")
 
@@ -683,9 +652,7 @@ interface LinkResolverApi {
 sealed interface RouteOutcome {
     data object Routed : RouteOutcome
     data object PendingAuth : RouteOutcome
-    data class ConfirmAccountSwitch(
-        val accountId: String, val portalId: String, val label: String, val link: DeepLink,
-    ) : RouteOutcome
+    data class ConfirmAccountSwitch(val accountId: String, val portalId: String, val label: String, val link: DeepLink) : RouteOutcome
     data object NoAccess : RouteOutcome
     data object Unknown : RouteOutcome
     data object Deferred : RouteOutcome // queued behind a critical flow
@@ -703,20 +670,13 @@ class DeepLinkRouter(
     suspend fun handle(raw: String, source: LinkSource, nav: NavController, depth: Int = 0): RouteOutcome {
         val parsed = parser.parse(LinkUri.parse(raw))
         val outcome = route(raw, parsed.link, source, nav, depth)
-        analytics(
-            "deep_link_opened",
-            parsed.attribution + mapOf(
-                "source" to source.name.lowercase(),
-                "pattern" to parsed.link.pattern(),
-                "result" to outcome::class.simpleName.orEmpty(),
-            ),
-        )
+        analytics("deep_link_opened", parsed.attribution + mapOf(
+            "source" to source.name.lowercase(), "pattern" to parsed.link.pattern(),
+            "result" to outcome::class.simpleName.orEmpty()))
         return outcome
     }
 
-    private suspend fun route(
-        raw: String, link: DeepLink, source: LinkSource, nav: NavController, depth: Int,
-    ): RouteOutcome {
+    private suspend fun route(raw: String, link: DeepLink, source: LinkSource, nav: NavController, depth: Int): RouteOutcome {
         // Aliases / tracked links: resolve once, then re-enter (bounded to avoid loops).
         if (link is DeepLink.Alias || link is DeepLink.Tracked) {
             if (depth > 1) return showUnknown(nav)
@@ -731,10 +691,7 @@ class DeepLinkRouter(
             if (!auth.isSignedIn) nav.navigate(LoginRoute) { launchSingleTop = true }
             return RouteOutcome.PendingAuth
         }
-        if (isInCriticalFlow()) {
-            pending.save(raw, source)
-            return RouteOutcome.Deferred
-        }
+        if (isInCriticalFlow()) { pending.save(raw, source); return RouteOutcome.Deferred }
         if (link is DeepLink.PortalTask) {
             when (val r = accounts.resolvePortal(link.portalSlug)) {
                 AccountResolver.Result.ActivePortal -> Unit
@@ -766,22 +723,13 @@ class DeepLinkRouter(
                 nav.navigate(ProductRoute(link.productId, link.tab?.name?.lowercase())) { launchSingleTop = true }
             }
             DeepLink.Orders -> nav.navigate(OrdersRoute, resetToHome)
-            is DeepLink.Order -> {
-                nav.navigate(OrdersRoute, resetToHome)
-                nav.navigate(OrderRoute(link.orderId)) { launchSingleTop = true }
-            }
-            is DeepLink.PortalTask -> {
-                nav.navigate(TasksRoute(link.portalSlug), resetToHome)
-                nav.navigate(TaskRoute(link.portalSlug, link.taskId)) { launchSingleTop = true }
-            }
+            is DeepLink.Order -> { nav.navigate(OrdersRoute, resetToHome); nav.navigate(OrderRoute(link.orderId)) { launchSingleTop = true } }
+            is DeepLink.PortalTask -> { nav.navigate(TasksRoute(link.portalSlug), resetToHome); nav.navigate(TaskRoute(link.portalSlug, link.taskId)) { launchSingleTop = true } }
             is DeepLink.Invite -> {
                 nav.navigate(HomeRoute, resetToHome)
                 nav.navigate(InviteRoute(link.code)) { launchSingleTop = true } // user confirms there
             }
-            is DeepLink.Offer -> {
-                nav.navigate(HomeRoute, resetToHome)
-                nav.navigate(PaywallRoute(link.offerId)) { launchSingleTop = true }
-            }
+            is DeepLink.Offer -> { nav.navigate(HomeRoute, resetToHome); nav.navigate(PaywallRoute(link.offerId)) { launchSingleTop = true } }
             is DeepLink.Alias, is DeepLink.Tracked, is DeepLink.Unknown -> showUnknown(nav)
         }
     }
@@ -817,21 +765,9 @@ private fun DeepLink.pattern(): String = when (this) {
 ```kotlin
 package com.example.app
 
-import android.content.Intent
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.viewModels
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.lifecycle.SavedStateHandle
-import androidx.lifecycle.ViewModel
-import androidx.navigation.compose.rememberNavController
-import com.example.app.links.LinkSource
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.receiveAsFlow
+// Imports: Intent, Bundle, ComponentActivity, setContent, viewModels, LaunchedEffect, collectAsState, getValue,
+// installSplashScreen (core-splashscreen), SavedStateHandle, ViewModel, rememberNavController, LinkSource,
+// kotlinx.coroutines.channels.Channel, kotlinx.coroutines.flow.receiveAsFlow.
 
 class MainActivity : ComponentActivity() {
 
@@ -891,9 +827,7 @@ class AppViewModel(private val state: SavedStateHandle /*, injected deps */) : V
     private val _links = Channel<Pair<String, LinkSource>>(capacity = Channel.CONFLATED)
     val links = _links.receiveAsFlow()
 
-    fun offerLink(uri: String, source: LinkSource) {
-        _links.trySend(uri to source)
-    }
+    fun offerLink(uri: String, source: LinkSource) { _links.trySend(uri to source) }
 }
 ```
 
@@ -1006,10 +940,7 @@ class DeferredLinkResolver(
         Uri.parse("x://x?$q").let { u -> u.queryParameterNames.associateWith { u.getQueryParameter(it).orEmpty() } }
 }
 
-interface FirstLaunchFlags {
-    suspend fun referrerConsumed(): Boolean
-    suspend fun markReferrerConsumed()
-}
+interface FirstLaunchFlags { suspend fun referrerConsumed(): Boolean; suspend fun markReferrerConsumed() }
 ```
 
 > Pending deferred links use a longer TTL than normal pending links (install + onboarding can take an hour+); configure a second `PendingLinkStore` instance or a TTL per source.
