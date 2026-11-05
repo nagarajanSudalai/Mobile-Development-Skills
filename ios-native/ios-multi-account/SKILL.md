@@ -972,9 +972,10 @@ final class AppModel {
     // MARK: Sign out
     func signOut(accountId: String) async {
         guard let account = await registry.account(accountId) else { return }
-        let wasActive = session?.account.id == accountId
-        let api = wasActive ? session!.api
-            : (try? Session(account: account, keychain: keychain, auth: auth, onRevoked: { _ in }))?.api
+        let active = session.flatMap { $0.account.id == accountId ? $0 : nil }
+        let wasActive = active != nil
+        let api = active?.api
+            ?? (try? Session(account: account, keychain: keychain, auth: auth, onRevoked: { _ in }))?.api
         if let api { await push.unregister(for: account, api: api) }   // best effort, server revoke too
         if wasActive { session?.teardown(); session = nil }
 
