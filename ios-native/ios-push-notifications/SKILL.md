@@ -5,7 +5,7 @@ description: Use when implementing, reviewing, testing, or debugging push and lo
 
 # iOS Push Notifications Skill
 
-Guide for building, auditing, and testing notifications on Apple platforms: **remote pushes via APNs** (alert, background, Live Activity, VoIP), **local notifications**, the **permission flow**, **payloads and APNs headers**, **handling and routing taps**, **Notification Service / Content extensions**, and the **provider server**. Applies whether pushes come from your own server, Firebase Cloud Messaging (FCM), or a vendor (OneSignal, Braze, Airship…). Siblings: **android-push-notifications**, **cross-platform-push-notifications** (Flutter / React Native / Expo).
+Guide for building, auditing, and testing notifications on Apple platforms: **remote pushes via APNs** (alert, background, Live Activity, VoIP), **local notifications**, the **permission flow**, **payloads and APNs headers**, **handling and routing taps**, **Notification Service / Content extensions**, and the **provider server**. Applies whether pushes come from your own server, Firebase Cloud Messaging (FCM), or a vendor (OneSignal, Braze, Airship…). Siblings: **android-push-notifications**, **flutter-push-notifications**, **react-native-push-notifications** (incl. Expo).
 
 Apple adds notification features every year (interruption levels, communication notifications, broadcast Live Activity pushes…). Verify OS availability and API names against the current SDK before shipping.
 

@@ -1,35 +1,37 @@
 ---
-name: cross-platform-in-app-purchase
-description: Use when implementing, reviewing, testing, or debugging in-app purchases or subscriptions in Flutter (in_app_purchase plugin) or React Native / Expo (react-native-iap, expo-iap) apps that talk to the App Store and Google Play directly — shared product/entitlement model across stores, purchase stream/listeners, completing/finishing transactions, Android acknowledgement, plan changes per platform, offers, restore, unified server verification (App Store Server API + Play Developer API), store policies, testing. For RevenueCat in Flutter/React Native, use cross-platform-revenuecat-iap.
+name: flutter-in-app-purchase
+description: Use when implementing, reviewing, testing, or debugging in-app purchases or subscriptions in a Flutter app using the in_app_purchase plugin (in_app_purchase_storekit, in_app_purchase_android) against the App Store and Google Play directly — shared product/entitlement model across stores, purchaseStream listener, completePurchase, Android acknowledgement/consume, plan changes per platform (ChangeSubscriptionParam), offers, restore, unified server verification (App Store Server API + Play Developer API), store policies, testing. For RevenueCat in Flutter use flutter-revenuecat-iap; for React Native / Expo use react-native-in-app-purchase; for store-specific detail in native apps see ios-in-app-purchase and android-in-app-purchase.
 ---
 
-# Cross-Platform In-App Purchases (Flutter & React Native)
+# Flutter In-App Purchases (`in_app_purchase`)
 
-Guide for building, auditing, and testing purchases in **Flutter** (`in_app_purchase`) and **React Native / Expo** (`react-native-iap`, `expo-iap`) apps that use the **App Store** and **Google Play** directly (no RevenueCat or other purchase backend). One shared Dart/TypeScript layer drives two different stores, so the hard part is keeping a **single entitlement model** while respecting each store's rules.
+Guide for building, auditing, and testing purchases in **Flutter** apps (`in_app_purchase`) that use the **App Store** and **Google Play** directly (no RevenueCat or other purchase backend). One shared Dart layer drives two different stores, so the hard part is keeping a **single entitlement model** while respecting each store's rules.
 
-Platform skills hold the store-specific detail — this skill links to them instead of repeating it:
+Related skills — this skill links to them instead of repeating their content:
 - **ios-in-app-purchase** — StoreKit rules, subscription groups, App Store Connect, App Review, post-purchase UI (§13)
 - **android-in-app-purchase** — Play Billing rules, base plans & offers, replacement modes, acknowledgement, RTDN, Play policy
+- **flutter-revenuecat-iap** — the same app built on RevenueCat instead of direct store APIs
+- **react-native-in-app-purchase** — the React Native / Expo equivalent (`react-native-iap`, `expo-iap`)
 
-Plugin APIs change across major versions (`react-native-iap` v14 reworked its API around the OpenIAP spec; `in_app_purchase` platform packages moved to StoreKit 2 and newer Play Billing). Verify every call against the version in `pubspec.yaml` / `package.json` before shipping.
+Plugin APIs change across major versions (`in_app_purchase` platform packages moved to StoreKit 2 and newer Play Billing). Verify every call against the version in `pubspec.yaml` before shipping.
 
 ## 0. Architecture (mental model)
 
 ```
 +-------------------------------------------------------------+
-| Shared UI (Flutter widgets / React components)              |
+| Shared UI (Flutter widgets)                                 |
 | Paywall, Plan status, Change plan, Restore, Manage          |
 +-------------------------------------------------------------+
-            ^ state (Stream / ChangeNotifier / Riverpod / Zustand / hooks)
+            ^ state (Stream / ChangeNotifier / Riverpod / Bloc)
 +-------------------------------------------------------------+
 | PurchaseService (singleton, started at app launch)          |
 | - one purchase listener for the whole app lifetime          |
 | - shared catalog: store product IDs → entitlement           |
-| - verify (server) → grant → complete/finish → refresh       |
+| - verify (server) → grant → complete → refresh              |
 | - platform branches: iOS appAccountToken / Android offers,  |
 |   obfuscatedAccountId, replacement modes, consume           |
 +-------------------------------------------------------------+
-     | in_app_purchase / react-native-iap / expo-iap
+     | in_app_purchase (+ _storekit / _android)
      v
 +--------------------------+     +-----------------------------+
 | StoreKit (iOS/macOS)     |     | Play Billing (Android)      |
@@ -50,8 +52,8 @@ The two stores model the same things differently:
 | Tier switching | One **subscription group**; StoreKit swaps plans | **No groups**; must pass old purchase + replacement mode | `changePlan(from:to:)` with platform branches |
 | Period | Separate product per period | **Base plan** inside one product | Catalog maps (product, base plan?) → tier + period |
 | Trial / intro | Intro offer per group, automatic | **Offer** on a base plan, needs `offerToken` | `bestOffer()` on Android only |
-| Proof of purchase | JWS transaction (SK2) / app receipt (SK1) | Purchase token | `verificationData.serverVerificationData` / `purchaseToken` |
-| Finish | `finish()` (redelivered until finished) | **Acknowledge** within 3 days or refunded; consume for consumables | `completePurchase` / `finishTransaction` after grant |
+| Proof of purchase | JWS transaction (SK2) / app receipt (SK1) | Purchase token | `verificationData.serverVerificationData` |
+| Finish | `finish()` (redelivered until finished) | **Acknowledge** within 3 days or refunded; consume for consumables | `completePurchase` after grant |
 | User link | `appAccountToken` (UUID) | `obfuscatedAccountId` (≤ 64 chars) | `accountToken(userId)` per platform |
 | Restore | `AppStore.sync()` / restore | Automatic via query | `restore()` |
 | Manage | `showManageSubscriptions` / App Store URL | Play subscriptions deep link | `openManage()` |
@@ -60,12 +62,12 @@ The two stores model the same things differently:
 
 Find out (from the codebase or by asking):
 
-- Framework and plugin with **exact versions**: `in_app_purchase` (+ `in_app_purchase_storekit`, `in_app_purchase_android`), `react-native-iap`, or `expo-iap`; Expo managed vs bare (Expo needs a **development build** with the config plugin — IAP doesn't work in Expo Go)
+- Plugin with **exact versions**: `in_app_purchase` (+ `in_app_purchase_storekit`, `in_app_purchase_android`)
 - Target stores (App Store, Play; also macOS? Amazon?) and minimum OS versions (StoreKit 2 needs iOS 15+)
 - Product catalog by type per store (consumable / non-consumable / subscriptions with groups or base plans / add-ons)
 - Backend? Strongly recommended — without it you can't know subscription expiry on Android or verify purchases reliably on either store
 - Account system and whether entitlements must work across platforms (bought on iOS, used on Android/web)
-- State management in use (Riverpod/Bloc/Provider, Redux/Zustand/React Query) — the service should plug into it, not replace it
+- State management in use (Riverpod/Bloc/Provider) — the service should plug into it, not replace it
 
 Write a **cross-store entitlement map** before coding:
 
@@ -84,47 +86,47 @@ Use the same IDs on both stores where the store allows it; keep the mapping expl
 
 - [ ] **App Store Connect**: products, subscription group levels, add-ons in separate groups, Paid Apps agreement (ios-in-app-purchase §3, §8)
 - [ ] **Play Console**: subscription products with base plans and offers, one-time products, app uploaded to a testing track, license testers (android-in-app-purchase §3, §8)
-- [ ] iOS: **In-App Purchase** capability in the Xcode project (`ios/Runner` for Flutter, `ios/<App>` for RN); Expo: config plugin + `expo prebuild` / EAS build
+- [ ] iOS: **In-App Purchase** capability in the Xcode project (`ios/Runner`)
 - [ ] Android: billing permission comes from the Play Billing dependency; `minSdk` meets the plugin's requirement
 - [ ] Bundle ID / applicationId identical to the store listings; Play: upload a signed build once so products can be queried
 - [ ] Backend has App Store Server API credentials (In-App Purchase key) and a Play service account; App Store Server Notifications V2 and Play RTDN point to it
 
 ## 3. Service lifecycle
 
-- [ ] **One** `PurchaseService` created at app start (before `runApp` work completes / in the root component), not inside the paywall
-- [ ] Subscribe to the purchase stream **immediately**: Flutter `InAppPurchase.instance.purchaseStream.listen`; RN `purchaseUpdatedListener` + `purchaseErrorListener` (or `useIAP` callbacks at the app root). This catches renewals, Ask-to-Buy approvals, pending Play purchases, promo codes, and transactions left over from a crash
-- [ ] Keep the subscription alive for the app's lifetime; cancel it only on app teardown (Flutter `dispose`, RN `remove()` + `endConnection()`)
-- [ ] Check availability (`isAvailable()` / `initConnection()`); show "store unavailable" if false (no Play Store, restricted device, emulator without Play)
-- [ ] Query products once per session (`queryProductDetails` / `getProducts` + `getSubscriptions` or `fetchProducts`); log `notFoundIDs` and show the rest
+- [ ] **One** `PurchaseService` created at app start (before `runApp` work completes), not inside the paywall
+- [ ] Subscribe to the purchase stream **immediately**: `InAppPurchase.instance.purchaseStream.listen`. This catches renewals, Ask-to-Buy approvals, pending Play purchases, promo codes, and transactions left over from a crash
+- [ ] Keep the subscription alive for the app's lifetime; cancel it only on app teardown (`dispose`)
+- [ ] Check availability (`isAvailable()`); show "store unavailable" if false (no Play Store, restricted device, emulator without Play)
+- [ ] Query products once per session (`queryProductDetails`); log `notFoundIDs` and show the rest
 - [ ] Re-sync on app resume: Android re-query purchases (catches out-of-app purchases and missed acknowledgements); refresh entitlements from the server on both platforms
 
 ## 4. Purchasing — shared rules
 
 - [ ] Purchase only from a user action; button disabled while in flight
-- [ ] Link purchases to your user: iOS `appAccountToken` (UUID derived from the user ID); Android `obfuscatedAccountId` (hash ≤ 64 chars). Flutter passes `applicationUserName` in `PurchaseParam` (used for both — check how your platform package maps it); RN passes `appAccountToken` / `obfuscatedAccountIdAndroid`
+- [ ] Link purchases to your user: iOS `appAccountToken` (UUID derived from the user ID); Android `obfuscatedAccountId` (hash ≤ 64 chars). Flutter passes `applicationUserName` in `PurchaseParam` (used for both — check how your platform package maps it)
 - [ ] Handle every status: **purchased**, **restored** (iOS), **pending** (Ask to Buy / slow payment — show "waiting", grant nothing), **canceled** (no alert), **error** (short retryable message)
-- [ ] Grant only after **server verification** (send `serverVerificationData` / `transactionReceipt` / `purchaseToken` + platform + product ID), idempotent by transaction ID / purchase token
-- [ ] **Complete only after granting**: Flutter `completePurchase` when `pendingCompletePurchase` is true; RN `finishTransaction({ purchase, isConsumable })`. On Android this acknowledges (or consumes) — skipping it means an automatic refund after 3 days; on iOS unfinished transactions are redelivered
-- [ ] Consumables: Flutter `buyConsumable(autoConsume: false)` then consume (`InAppPurchaseAndroidPlatformAddition.consumePurchase`) after the balance is persisted (or `autoConsume: true` only if you credit before completing); RN `finishTransaction({ isConsumable: true })` after crediting
-- [ ] Never auto-finish transactions before verification (`andDangerouslyFinishTransactionAutomaticallyIOS` must stay false in react-native-iap)
+- [ ] Grant only after **server verification** (send `serverVerificationData` + platform + product ID), idempotent by transaction ID / purchase token
+- [ ] **Complete only after granting**: `completePurchase` when `pendingCompletePurchase` is true. On Android this acknowledges (or consumes) — skipping it means an automatic refund after 3 days; on iOS unfinished transactions are redelivered
+- [ ] Consumables: `buyConsumable(autoConsume: false)` then consume (`InAppPurchaseAndroidPlatformAddition.consumePurchase`) after the balance is persisted (or `autoConsume: true` only if you credit before completing)
+- [ ] Never complete transactions before verification
 - [ ] Gate the UI on the **refreshed entitlements** (server or recomputed), not on "purchase call returned"
 
 ## 5. Platform branches
 
 ### 5.1 iOS
-- [ ] Prefer **StoreKit 2** mode of the plugin (`in_app_purchase_storekit` SK2 opt-in where required; react-native-iap/expo-iap use SK2 on recent versions) — verify for your version
+- [ ] Prefer **StoreKit 2** mode of the plugin (`in_app_purchase_storekit` SK2 opt-in where required) — verify for your version
 - [ ] Server verifies the **JWS** (SK2) or the app receipt (SK1) with the App Store Server API (ios-in-app-purchase §7)
 - [ ] Plan changes inside a subscription group are a normal purchase of the other product — don't block "already subscribed"; downgrades apply at renewal (ios-in-app-purchase §3.2)
-- [ ] Offer code sheet: Flutter `InAppPurchaseStoreKitPlatformAddition` / `SKPaymentQueueWrapper().presentCodeRedemptionSheet()`; RN `presentCodeRedemptionSheetIOS()` — redemption arrives via the purchase stream
+- [ ] Offer code sheet: `InAppPurchaseStoreKitPlatformAddition` / `SKPaymentQueueWrapper().presentCodeRedemptionSheet()` — redemption arrives via the purchase stream
 - [ ] Price-increase consent and promotional offers need platform-specific APIs (promotional offers require a server signature)
-- [ ] Restore button required (`restorePurchases()` / `getAvailablePurchases()`) — restored transactions also need completing
+- [ ] Restore button required (`restorePurchases()`) — restored transactions also need completing
 
 ### 5.2 Android
-- [ ] Subscriptions carry **offers**: Flutter `in_app_purchase_android` returns one `GooglePlayProductDetails` per offer (with `offerToken` / `subscriptionIndex`); RN products expose `subscriptionOfferDetails` — **choose the offer explicitly** (eligible trial/intro, else base plan offer) and pass its token
-- [ ] Tier change **must** pass the old purchase and a replacement mode — Flutter `GooglePlayPurchaseParam(changeSubscriptionParam: ChangeSubscriptionParam(oldPurchaseDetails:, replacementMode:))`; RN `requestSubscription({ purchaseTokenAndroid, replacementModeAndroid, subscriptionOffers })` (names vary by version). Otherwise the user is billed for two subscriptions (android-in-app-purchase §3.2)
+- [ ] Subscriptions carry **offers**: `in_app_purchase_android` returns one `GooglePlayProductDetails` per offer (with `offerToken` / `subscriptionIndex`) — **choose the offer explicitly** (eligible trial/intro, else base plan offer) and pass its token
+- [ ] Tier change **must** pass the old purchase and a replacement mode — `GooglePlayPurchaseParam(changeSubscriptionParam: ChangeSubscriptionParam(oldPurchaseDetails:, replacementMode:))` (names vary by version). Otherwise the user is billed for two subscriptions (android-in-app-purchase §3.2)
 - [ ] Each plan change creates a **new purchase token** → verify + complete it
-- [ ] Pending purchases (`PurchaseStatus.pending` / `purchaseStateAndroid === PENDING`) → no access until purchased
-- [ ] Re-query purchases on resume (`queryPastPurchases`/`restorePurchases` on Flutter, `getAvailablePurchases` on RN) and complete anything unacknowledged
+- [ ] Pending purchases (`PurchaseStatus.pending`) → no access until purchased
+- [ ] Re-query purchases on resume (`queryPastPurchases`/`restorePurchases`) and complete anything unacknowledged
 - [ ] The client has no expiry, base plan, or grace/hold state — get them from the server (subscriptionsv2)
 
 ## 6. Entitlements & restore
@@ -138,7 +140,7 @@ Use the same IDs on both stores where the store allows it; keep the mapping expl
 
 ## 7. Offers & pricing
 
-- [ ] Prices from product details (`price` / `localizedPrice` / `displayPrice`) — never hardcoded; Android subscription price = the offer's final (recurring) pricing phase
+- [ ] Prices from product details (`price` / `rawPrice` + `currencyCode`) — never hardcoded; Android subscription price = the offer's final (recurring) pricing phase
 - [ ] iOS intro eligibility per group (plugin or server); Android shows only offers Play returns for the user
 - [ ] Trial text: duration + price after the trial, per platform
 - [ ] Yearly savings = `(monthly × 12 − yearly) / (monthly × 12)` using the same currency on the same platform
@@ -158,11 +160,12 @@ Use the same IDs on both stores where the store allows it; keep the mapping expl
 - [ ] Platform-specific disclosure text ("Manage in Settings" on iOS, "Google Play → Payments & subscriptions" on Android)
 - [ ] Don't mention the other platform's payment or prices in-app ("cheaper on web") unless a program allows it in that region
 
+
 ## 10. Testing plan
 
-1. **iOS**: Xcode StoreKit Configuration file — open `ios/Runner.xcworkspace` (Flutter) / `ios/<App>.xcworkspace` (RN), set it in the scheme, run from Xcode; then sandbox account on a device; TestFlight
+1. **iOS**: Xcode StoreKit Configuration file — open `ios/Runner.xcworkspace`, set it in the scheme, run from Xcode; then sandbox account on a device; TestFlight
 2. **Android**: license testers, internal testing track, test cards (approve / decline / slow), accelerated renewals, Play Billing Lab
-3. **Dart/TS unit tests** with a fake store adapter (Appendix) — no plugin in tests
+3. **Dart unit tests** with a fake store adapter (Appendix) — no plugin in tests
 4. **Server**: sandbox notifications from both stores
 
 ### Scenario matrix
@@ -190,31 +193,31 @@ Use the same IDs on both stores where the store allows it; keep the mapping expl
 
 ## 11. Common bugs to look for in review
 
-- Purchase listener created in the paywall widget/screen → renewals, Ask-to-Buy approvals, leftover transactions missed; or several listeners → duplicate grants
-- `completePurchase` / `finishTransaction` never called (Android refunds after 3 days; iOS redelivers forever) — or called before verification/granting
+- Purchase listener created in the paywall widget → renewals, Ask-to-Buy approvals, leftover transactions missed; or several listeners → duplicate grants
+- `completePurchase` never called (Android refunds after 3 days; iOS redelivers forever) — or called before verification/granting
 - Restored iOS transactions not completed
 - Granting on `pending`; error alert on `canceled`
-- `andDangerouslyFinishTransactionAutomaticallyIOS: true`; Flutter `autoConsume: true` with credit-after-complete logic
+- `autoConsume: true` with credit-after-complete logic
 - Android tier change without old purchase + replacement mode → double billing
 - Android offer picked by index (`subscriptionOfferDetails[0]`) or no `offerToken` → wrong price / developer error
 - Trusting `localVerificationData` on the device instead of server verification
 - Gating on product IDs / substrings; same entitlement logic duplicated per platform and drifting
 - No server → Android "active forever" (no expiry) or iOS expiry ignored
 - Selling a second subscription on Android to a user already subscribed on iOS
-- Expo Go used for testing IAP (doesn't work) / missing config plugin; StoreKit config not selected because the app was run from the CLI
-- Plugin upgraded across a major version without migrating the API (e.g. react-native-iap v14)
+- StoreKit config not selected because the app was run from the CLI (`flutter run`) instead of Xcode
+- Plugin upgraded across a major version without migrating the API
 - Hardcoded prices; iOS-only disclosure text shown on Android or vice versa
 - No Restore button on iOS; missing Terms/Privacy links
 
 ## 12. Output format
 
 When asked to **review/audit**:
-1. **Summary** — framework, plugin + versions, platforms, StoreKit mode, backend yes/no, cross-store entitlement map
+1. **Summary** — plugin + versions, platforms, StoreKit mode, backend yes/no, cross-store entitlement map
 2. **Checklist results** — sections 2–9 with ✅ / ❌ / ⚠️ and file:line, split **Shared / iOS / Android** where relevant (console items listed for the user to confirm)
 3. **Critical issues first** (refunds from missing acknowledgement, lost or double-granted purchases, double billing, cross-platform double subscriptions, policy risks) with fix code
 4. **Testing gaps** — X1–X18 not covered, per platform
 
-When asked to **implement**: start from the Appendix for the user's framework, adapt the catalog, remove unused parts, then list App Store Connect, Play Console, backend, and policy steps.
+When asked to **implement**: start from Appendix A, adapt the catalog, remove unused parts, then list App Store Connect, Play Console, backend, and policy steps.
 
 ---
 
@@ -408,148 +411,7 @@ class PurchaseService extends ChangeNotifier {
 
 Keep `PurchaseService` in a top-level provider (Provider/Riverpod) so it lives for the whole app, and call `onResume()` from an `AppLifecycleListener` when the app returns to the foreground.
 
-## Appendix B — React Native (`react-native-iap` v12/13 API)
-
-`react-native-iap` v14 and `expo-iap` renamed most of these (`fetchProducts`, unified `requestPurchase({ request: { ios, android } })`, `useIAP`). Keep the same flow and update names to your version.
-
-### B.1 Catalog
-
-```ts
-import { Platform } from "react-native";
-
-export type Tier = "free" | "plus" | "pro";
-
-const iosTier: Record<string, Tier> = {
-  "com.app.plus.monthly": "plus", "com.app.plus.yearly": "plus",
-  "com.app.pro.monthly": "pro", "com.app.pro.yearly": "pro",
-};
-const androidTier: Record<string, Tier> = { plus: "plus", pro: "pro" };
-
-export const Catalog = {
-  tiers: Platform.OS === "ios" ? iosTier : androidTier,
-  inApp: Platform.select({ ios: ["com.app.lifetime", "com.app.credits.100"], default: ["lifetime", "credits_100"] })!,
-  consumables: new Set(["com.app.credits.100", "credits_100"]),
-  get subs() { return Object.keys(this.tiers); },
-};
-```
-
-### B.2 PurchaseService
-
-```ts
-import * as IAP from "react-native-iap";
-import { Platform, EmitterSubscription } from "react-native";
-import { sha256 } from "js-sha256";
-
-type Backend = {
-  verify(args: { platform: "ios" | "android"; purchase: IAP.Purchase; userId: string }): Promise<boolean>;
-  entitlements(userId: string): Promise<{ tier: Tier; store?: string; expiresAt?: string }>;
-};
-
-export class PurchaseService {
-  private updates?: EmitterSubscription;
-  private errors?: EmitterSubscription;
-  private inFlight = new Set<string>();
-  userId?: string;
-  onChange?: () => void;
-  state = { available: false, products: [] as IAP.Product[], subscriptions: [] as IAP.Subscription[],
-            tier: "free" as Tier, pending: false, error: undefined as string | undefined };
-
-  constructor(private backend: Backend) {}
-
-  /** Call once at app start (root component / store init). */
-  async start() {
-    this.state.available = await IAP.initConnection().catch(() => false);
-    if (!this.state.available) return this.emit();
-    if (Platform.OS === "android") await IAP.flushFailedPurchasesCachedAsPendingAndroid().catch(() => {});
-
-    this.updates = IAP.purchaseUpdatedListener((p) => void this.process(p));
-    this.errors = IAP.purchaseErrorListener((e) => {
-      if (e.code !== IAP.ErrorCode.E_USER_CANCELLED) this.state.error = "Purchase failed. Please try again.";
-      this.emit();
-    });
-
-    this.state.subscriptions = await IAP.getSubscriptions({ skus: Catalog.subs });
-    this.state.products = await IAP.getProducts({ skus: Catalog.inApp });
-    await this.refresh();
-  }
-
-  stop() { this.updates?.remove(); this.errors?.remove(); IAP.endConnection(); }
-
-  /** Android: on resume, complete anything unacknowledged and refresh. */
-  async onResume() {
-    if (Platform.OS === "android") (await IAP.getAvailablePurchases()).forEach((p) => void this.process(p));
-    await this.refresh();
-  }
-
-  private accountId() { return this.userId ? sha256(`app:${this.userId}`) : undefined; }   // 64 hex chars
-
-  /** Android: choose an offer explicitly (eligible trial, else base plan). */
-  androidOffer(sub: IAP.SubscriptionAndroid, basePlanId: string) {
-    const offers = sub.subscriptionOfferDetails.filter((o) => o.basePlanId === basePlanId);
-    return offers.find((o) => o.offerId) ?? offers.find((o) => !o.offerId);
-  }
-
-  async buySubscription(sku: string, opts: { offerToken?: string; replacingToken?: string; replacementMode?: number } = {}) {
-    if (!this.userId) return;
-    await IAP.requestSubscription({
-      sku,
-      appAccountToken: Platform.OS === "ios" ? uuidFromUser(this.userId) : undefined,
-      obfuscatedAccountIdAndroid: this.accountId(),
-      ...(opts.offerToken && { subscriptionOffers: [{ sku, offerToken: opts.offerToken }] }),
-      ...(opts.replacingToken && {                     // Android tier change — never omit
-        purchaseTokenAndroid: opts.replacingToken,
-        replacementModeAndroid: opts.replacementMode ?? IAP.ReplacementModesAndroid.CHARGE_PRORATED_PRICE,
-      }),
-    });
-  }
-
-  async buyProduct(sku: string) {
-    if (!this.userId) return;
-    await IAP.requestPurchase({
-      sku, skus: [sku],
-      andDangerouslyFinishTransactionAutomaticallyIOS: false,   // never auto-finish
-      obfuscatedAccountIdAndroid: this.accountId(),
-    });
-  }
-
-  async restore() {
-    const purchases = await IAP.getAvailablePurchases();
-    for (const p of purchases) await this.process(p);
-    await this.refresh();
-    if (this.state.tier === "free") { this.state.error = "No previous purchases found."; this.emit(); }
-  }
-
-  // verify → grant → finish → refresh
-  private async process(p: IAP.Purchase) {
-    const key = p.purchaseToken ?? p.transactionId ?? "";
-    if (!this.userId || this.inFlight.has(key)) return;
-    if (Platform.OS === "android" && p.purchaseStateAndroid === IAP.PurchaseStateAndroid.PENDING) {
-      this.state.pending = true; return this.emit();
-    }
-    this.inFlight.add(key);
-    try {
-      const ok = await this.backend.verify({ platform: Platform.OS as "ios" | "android", purchase: p, userId: this.userId });
-      if (!ok) return;                                    // not finished → redelivered / re-queried
-      await IAP.finishTransaction({ purchase: p, isConsumable: Catalog.consumables.has(p.productId) });
-      this.state.pending = false;
-    } finally {
-      this.inFlight.delete(key);
-      await this.refresh();
-    }
-  }
-
-  async refresh() {
-    if (this.userId) this.state.tier = (await this.backend.entitlements(this.userId)).tier;
-    this.emit();
-  }
-
-  private emit() { this.onChange?.(); }
-}
-```
-
-`uuidFromUser` is a deterministic UUID derived from the user ID (SHA-256 → 16 bytes with version/variant bits set; the same function runs on the server to check `appAccountToken`). Expose `PurchaseService` through your state library; keep one instance for the app lifetime.
-
-## Appendix C — Unified verification endpoint (Node/TypeScript)
+## Appendix B — Unified verification endpoint (Node/TypeScript)
 
 ```ts
 import { AppStoreServerAPIClient, SignedDataVerifier, Environment } from "@apple/app-store-server-library";

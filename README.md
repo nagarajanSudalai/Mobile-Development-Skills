@@ -1,61 +1,33 @@
-# App Development Skills
+# Mobile Development Skills
 
-Claude skills for building, reviewing, and shipping apps. Each skill lives in its own folder with a `SKILL.md`.
+Claude skills for building, reviewing, and shipping mobile apps, organized by platform. Each skill lives in its own folder with a `SKILL.md`.
 
-Status: ✅ done · 🟡 next · ⬜ planned
+```
+ios-native/        Swift · SwiftUI · UIKit
+android-native/    Kotlin · Jetpack Compose · Views
+react-native/      React Native (bare) · Expo
+flutter/           Dart · Flutter
+```
 
-## Monetization
+## Skills
 
-| Skill | Status | Covers |
-|---|---|---|
-| [ios-in-app-purchase](ios-in-app-purchase/SKILL.md) | ✅ | Native StoreKit 2/1: product types, subscription groups, add-ons, offers, promoted IAPs, paid→freemium, Server API / Notifications V2, post-purchase UI, App Review 3.1, testing |
-| [ios-revenuecat-iap](ios-revenuecat-iap/SKILL.md) | ✅ | RevenueCat iOS SDK: dashboard setup, entitlements, offerings, Paywalls & Customer Center, identity/transfers, webhooks, migration, testing |
-| [android-in-app-purchase](android-in-app-purchase/SKILL.md) | ✅ | Native Google Play Billing: base plans & offers, replacement modes, acknowledge/consume (3-day rule), pending purchases, Play Developer API / RTDN, Play policy, testing |
-| [android-revenuecat-iap](android-revenuecat-iap/SKILL.md) | ✅ | RevenueCat Android SDK: service credentials & RTDN, entitlements, offerings & subscription options, Paywalls & Customer Center, identity/transfers, plan changes, webhooks, migration |
-| [cross-platform-in-app-purchase](cross-platform-in-app-purchase/SKILL.md) | ✅ | Flutter `in_app_purchase` & React Native `react-native-iap`/`expo-iap`: shared entitlement model across stores, complete-after-grant, Android plan changes/offers, unified server verification |
-| [cross-platform-revenuecat-iap](cross-platform-revenuecat-iap/SKILL.md) | ✅ | RevenueCat in Flutter & React Native/Expo: one project for both stores, platform keys, cross-platform identity, Android plan-change branch, RevenueCatUI, migration from native plugins |
-| paywall-design | ⬜ | Paywall UX, pricing pages, experiments, compliance-safe copy |
+| Area | iOS Native | Android Native | React Native | Flutter |
+|---|---|---|---|---|
+| In-app purchases (store-native) | [ios-in-app-purchase](ios-native/ios-in-app-purchase/SKILL.md) | [android-in-app-purchase](android-native/android-in-app-purchase/SKILL.md) | [react-native-in-app-purchase](react-native/react-native-in-app-purchase/SKILL.md) | [flutter-in-app-purchase](flutter/flutter-in-app-purchase/SKILL.md) |
+| In-app purchases (RevenueCat) | [ios-revenuecat-iap](ios-native/ios-revenuecat-iap/SKILL.md) | [android-revenuecat-iap](android-native/android-revenuecat-iap/SKILL.md) | [react-native-revenuecat-iap](react-native/react-native-revenuecat-iap/SKILL.md) | [flutter-revenuecat-iap](flutter/flutter-revenuecat-iap/SKILL.md) |
+| Push notifications | [ios-push-notifications](ios-native/ios-push-notifications/SKILL.md) | [android-push-notifications](android-native/android-push-notifications/SKILL.md) | [react-native-push-notifications](react-native/react-native-push-notifications/SKILL.md) | [flutter-push-notifications](flutter/flutter-push-notifications/SKILL.md) |
+| List UX | [ios-list-ux](ios-native/ios-list-ux/SKILL.md) | [android-list-ux](android-native/android-list-ux/SKILL.md) | [react-native-list-ux](react-native/react-native-list-ux/SKILL.md) | [flutter-list-ux](flutter/flutter-list-ux/SKILL.md) |
 
-## Release & compliance
+### What each area covers
 
-| Skill | Status | Covers |
-|---|---|---|
-| ios-app-store-submission | 🟡 | Metadata, screenshots, review notes, common rejections, phased release, TestFlight |
-| ios-privacy-compliance | 🟡 | Privacy manifest (`PrivacyInfo.xcprivacy`), required-reason APIs, nutrition labels, ATT, account deletion |
-| ios-ci-cd | ⬜ | Xcode Cloud / fastlane, signing & provisioning, build numbers, automated TestFlight uploads |
-
-## Core app building blocks
-
-| Skill | Status | Covers |
-|---|---|---|
-| [ios-push-notifications](ios-push-notifications/SKILL.md) | ✅ | APNs token auth & headers, permission flow, token lifecycle, routing (incl. cold start), actions, silent pushes, Service/Content extensions, communication notifications, Live Activity & VoIP pushes, FCM, provider server, testing |
-| [android-push-notifications](android-push-notifications/SKILL.md) | ✅ | FCM HTTP v1, notification vs data messages, POST_NOTIFICATIONS, channels, token lifecycle, PendingIntents & deep links, direct reply, MessagingStyle/conversations, Doze & priority, exact alarms, server, adb testing |
-| [cross-platform-push-notifications](cross-platform-push-notifications/SKILL.md) | ✅ | Flutter (firebase_messaging + flutter_local_notifications), React Native (RNFirebase + Notifee), Expo (expo-notifications): per-platform payloads, 3 app states × 2 platforms, cold-start routing, native NSE, server |
-| ios-auth-sign-in-with-apple | ⬜ | Sign in with Apple, passkeys, Keychain, token refresh, account deletion requirement |
-| ios-deep-links | ⬜ | Universal links, AASA file, custom schemes, routing in SwiftUI |
-| ios-swiftui-architecture | ⬜ | `@Observable`, navigation, dependency injection, modularization, Swift 6 concurrency |
-| ios-persistence-sync | ⬜ | SwiftData / Core Data, migrations, CloudKit sync, offline-first |
-| ios-networking | ⬜ | URLSession async/await, retries, auth, caching, background transfers |
-
-## Platform features
-
-| Skill | Status | Covers |
-|---|---|---|
-| ios-widgets-live-activities | ⬜ | WidgetKit, interactive widgets, Live Activities, push-to-update |
-| ios-app-intents | ⬜ | App Intents, Shortcuts, Siri, Spotlight, Control Center controls |
-
-## Quality
-
-| Skill | Status | Covers |
-|---|---|---|
-| ios-testing | ⬜ | Swift Testing / XCTest, UI tests, snapshot tests, StoreKit tests |
-| ios-accessibility-localization | ⬜ | VoiceOver, Dynamic Type, RTL, String Catalogs, pluralization |
-| ios-performance | ⬜ | Instruments, launch time, hangs, memory, battery, MetricKit |
-| ios-crash-analytics | ⬜ | Crash reporting (Crashlytics/Sentry), symbolication, analytics events, privacy |
+- **In-app purchases (store-native)** — StoreKit 2/1 and Google Play Billing (or `react-native-iap` / `expo-iap` / `in_app_purchase`): product types, subscriptions, offers, upgrades/downgrades, acknowledge/finish rules, server verification and notifications, store policy, testing.
+- **In-app purchases (RevenueCat)** — dashboard setup, entitlements, offerings, Paywalls & Customer Center, identity/transfers, webhooks, migration, testing.
+- **Push notifications** — APNs / FCM, permission flow, token lifecycle, routing (incl. cold start), actions, silent/data messages, extensions and channels, provider server, testing.
+- **List UX** — batch data loading, load more / infinite scroll, shimmer loader for primary lists and a plain spinner for secondary lists and load-more, swipe actions, pull to refresh, empty/error/offline states, thumbnail caching, optimistic updates, performance, search/filter, selection, sticky headers, scroll restoration, accessibility.
 
 ## Conventions
 
-- Folder name = skill `name` in the frontmatter (kebab-case, platform prefix: `ios-`, `android-`, or none for cross-platform)
-- `description` says **when** to use the skill and, if a sibling skill overlaps, when to use that one instead
+- Folder name = skill `name` in the frontmatter, kebab-case with a platform prefix: `ios-`, `android-`, `react-native-`, `flutter-`
+- `description` says **when** to use the skill and points to sibling skills on other platforms
 - Structure: context questions → checklists by area → testing matrix → common bugs → output format (review vs implement) → appendix reference implementation
-- Note OS/SDK version gates; tell Claude to verify fast-moving APIs against current docs
+- Note OS/SDK/package version gates; tell Claude to verify fast-moving APIs against current docs
