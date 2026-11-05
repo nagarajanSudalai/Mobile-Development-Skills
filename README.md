@@ -17,6 +17,8 @@ flutter/           Dart · Flutter
 | In-app purchases (RevenueCat) | [ios-revenuecat-iap](ios-native/ios-revenuecat-iap/SKILL.md) | [android-revenuecat-iap](android-native/android-revenuecat-iap/SKILL.md) | [react-native-revenuecat-iap](react-native/react-native-revenuecat-iap/SKILL.md) | [flutter-revenuecat-iap](flutter/flutter-revenuecat-iap/SKILL.md) |
 | Push notifications | [ios-push-notifications](ios-native/ios-push-notifications/SKILL.md) | [android-push-notifications](android-native/android-push-notifications/SKILL.md) | [react-native-push-notifications](react-native/react-native-push-notifications/SKILL.md) | [flutter-push-notifications](flutter/flutter-push-notifications/SKILL.md) |
 | List UX | [ios-list-ux](ios-native/ios-list-ux/SKILL.md) | [android-list-ux](android-native/android-list-ux/SKILL.md) | [react-native-list-ux](react-native/react-native-list-ux/SKILL.md) | [flutter-list-ux](flutter/flutter-list-ux/SKILL.md) |
+| Deep links | [ios-deep-links](ios-native/ios-deep-links/SKILL.md) | [android-deep-links](android-native/android-deep-links/SKILL.md) | [react-native-deep-links](react-native/react-native-deep-links/SKILL.md) | [flutter-deep-links](flutter/flutter-deep-links/SKILL.md) |
+| Multi-account & portals | [ios-multi-account](ios-native/ios-multi-account/SKILL.md) | [android-multi-account](android-native/android-multi-account/SKILL.md) | [react-native-multi-account](react-native/react-native-multi-account/SKILL.md) | [flutter-multi-account](flutter/flutter-multi-account/SKILL.md) |
 
 ### What each area covers
 
@@ -24,6 +26,8 @@ flutter/           Dart · Flutter
 - **In-app purchases (RevenueCat)** — dashboard setup, entitlements, offerings, Paywalls & Customer Center, identity/transfers, webhooks, migration, testing.
 - **Push notifications** — APNs / FCM, permission flow, token lifecycle, routing (incl. cold start), actions, silent/data messages, extensions and channels, provider server, testing.
 - **List UX** — batch data loading, load more / infinite scroll, shimmer loader for primary lists and a plain spinner for secondary lists and load-more, swipe actions, pull to refresh, empty/error/offline states, thumbnail caching, optimistic updates, performance, search/filter, selection, sticky headers, scroll restoration, accessibility.
+- **Deep links** — universal links / App Links and their verification files, custom schemes, URL design, routing across cold/warm starts, pending links through login, vendor-neutral deferred deep links, entry points (push, widgets, QR, OAuth), fallbacks, security, testing.
+- **Multi-account & portals** — several signed-in accounts per device, each with several portals (workspaces/organizations): secure per-account tokens, data isolation, account and portal switching, push and deep-link routing to the right account + portal, purchases, sign-out and cleanup.
 
 ## Conventions
 
