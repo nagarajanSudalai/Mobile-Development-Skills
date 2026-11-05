@@ -454,30 +454,17 @@ Assumes `@shopify/flash-list` v2, `@tanstack/react-query` v5, `react-native-rean
 ```ts
 // list/types.ts
 export type Item = {
-  id: string;
-  title: string;
-  subtitle: string;
-  thumbUrl: string | null;
-  blurhash?: string | null;
-  unread: boolean;
-  createdAt: string;
+  id: string; title: string; subtitle: string;
+  thumbUrl: string | null; blurhash?: string | null;
+  unread: boolean; createdAt: string;
 };
 
 export type Page = { items: Item[]; nextCursor: string | null };
 
-export async function fetchItemsPage(
-  params: { cursor: string | null; q: string; limit: number },
-  signal?: AbortSignal,
-): Promise<Page> {
-  const url = new URL('https://api.example.com/items');
-  if (params.cursor) url.searchParams.set('cursor', params.cursor);
-  if (params.q) url.searchParams.set('q', params.q);
-  url.searchParams.set('limit', String(params.limit));
-  const res = await fetch(url.toString(), { signal });
-  if (!res.ok) throw new HttpError(res.status);
-  return res.json();
-}
-
+// fetchItemsPage({ cursor, q, limit }, signal?): GET /items with cursor/q/limit query params,
+// passes the AbortSignal to fetch, throws HttpError(status) when !res.ok, returns res.json() as Page.
+export declare function fetchItemsPage(
+  params: { cursor: string | null; q: string; limit: number }, signal?: AbortSignal): Promise<Page>;
 export class HttpError extends Error {
   constructor(public status: number) { super(`HTTP ${status}`); }
 }
@@ -633,78 +620,15 @@ export function useDelayedFlag(active: boolean, delay = 200, minDuration = 400) 
 ```
 
 ```tsx
-// list/Skeleton.tsx
-import React, { createContext, useContext, useEffect } from 'react';
-import { StyleSheet, View, type ViewStyle, type DimensionValue } from 'react-native';
-import Animated, {
-  Easing, interpolate, useAnimatedStyle, useReducedMotion, useSharedValue,
-  withRepeat, withTiming, type SharedValue,
-} from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
-
-const ShimmerClock = createContext<SharedValue<number> | null>(null);
-
-export function SkeletonProvider({ children }: { children: React.ReactNode }) {
-  const progress = useSharedValue(0);
-  const reduceMotion = useReducedMotion();
-  useEffect(() => {
-    if (reduceMotion) return;
-    progress.value = withRepeat(withTiming(1, { duration: 1200, easing: Easing.linear }), -1);
-  }, [reduceMotion, progress]);
-  return <ShimmerClock.Provider value={reduceMotion ? null : progress}>{children}</ShimmerClock.Provider>;
-}
-
-export function Bone({ width, height, radius = 6, style }: {
-  width: DimensionValue; height: number; radius?: number; style?: ViewStyle;
-}) {
-  const progress = useContext(ShimmerClock);
-  const band = useAnimatedStyle(() => ({
-    transform: [{ translateX: interpolate(progress ? progress.value : 0, [0, 1], [-200, 400]) }],
-  }));
-  return (
-    <View style={[styles.bone, { width, height, borderRadius: radius }, style]}>
-      {progress && (
-        <Animated.View style={[StyleSheet.absoluteFill, band]}>
-          <LinearGradient
-            colors={['transparent', 'rgba(255,255,255,0.45)', 'transparent']}
-            start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
-            style={{ width: 200, height: '100%' }}
-          />
-        </Animated.View>
-      )}
-    </View>
-  );
-}
-
-// Must mirror ItemRow's layout exactly (padding, thumb size, line heights).
-export function ItemRowSkeleton() {
-  return (
-    <View style={rowStyles.row}>
-      <Bone width={56} height={56} radius={8} />
-      <View style={rowStyles.text}>
-        <Bone width="70%" height={16} />
-        <Bone width="45%" height={14} style={{ marginTop: 8 }} />
-      </View>
-    </View>
-  );
-}
-
-export function ListSkeleton({ count = 8 }: { count?: number }) {
-  return (
-    <SkeletonProvider>
-      <View
-        accessible accessibilityLabel="Loading" accessibilityRole="progressbar"
-        importantForAccessibility="yes"
-      >
-        <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
-          {Array.from({ length: count }, (_, i) => <ItemRowSkeleton key={i} />)}
-        </View>
-      </View>
-    </SkeletonProvider>
-  );
-}
-
-const styles = StyleSheet.create({ bone: { backgroundColor: '#E6E8EB', overflow: 'hidden' } });
+// list/Skeleton.tsx — sketch:
+// - SkeletonProvider: one shared Reanimated clock (useSharedValue + withRepeat(withTiming(1, 1200ms linear)))
+//   in context so every bone animates in sync; provides null when useReducedMotion() → static bones.
+// - Bone({ width, height, radius }): grey View (overflow hidden) with an Animated.View translateX band
+//   holding an expo-linear-gradient transparent→white(0.45)→transparent sweep.
+// - ItemRowSkeleton: MUST mirror ItemRow's layout (56pt thumb bone + 70%/45% text bones, rowStyles).
+// - ListSkeleton({ count = 8 }): SkeletonProvider > View accessible accessibilityLabel="Loading"
+//   accessibilityRole="progressbar", with the bones hidden from accessibility.
+import { StyleSheet } from 'react-native';
 export const rowStyles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, minHeight: 80 },
   text: { flex: 1, marginLeft: 12 },
@@ -774,15 +698,8 @@ export const ItemRow = memo(function ItemRow({ item, onOpen, selected }: Props) 
   );
 });
 
-const styles = StyleSheet.create({
-  bg: { backgroundColor: 'white' },
-  pressed: { opacity: 0.7 },
-  thumb: { width: THUMB, height: THUMB, borderRadius: 8, backgroundColor: '#E6E8EB' },
-  title: { fontSize: 16, color: '#111' },
-  unread: { fontWeight: '600' },
-  subtitle: { fontSize: 14, color: '#555', marginTop: 2 },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#0A84FF', marginLeft: 8 },
-});
+const styles = StyleSheet.create({ /* bg, pressed (opacity .7), thumb (56x56, radius 8, grey bg),
+  title, unread (fontWeight 600), subtitle, dot (10pt accent circle) — use theme tokens */ } as any);
 ```
 
 The inline `onPress` closure is fine here because the row is memoized on `item`/`onOpen`; the closure is recreated only when the row re-renders anyway.
@@ -792,9 +709,8 @@ The inline `onPress` closure is fine here because the row is memoized on `item`/
 ```tsx
 // list/SwipeableRow.tsx
 import React, { useCallback, useEffect, useRef } from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
-import Animated, { useAnimatedStyle, interpolate, Extrapolation, type SharedValue } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
 // Shared "currently open" ref, owned by the screen.
@@ -811,21 +727,11 @@ type Props = {
   children: React.ReactNode;
 };
 
-function Action({ label, color, onPress, drag, side }: {
-  label: string; color: string; onPress: () => void;
-  drag: SharedValue<number>; side: 'left' | 'right';
-}) {
-  const style = useAnimatedStyle(() => {
-    const d = side === 'right' ? -drag.value : drag.value;
-    return { transform: [{ scale: interpolate(d, [0, 80], [0.6, 1], Extrapolation.CLAMP) }] };
-  });
-  return (
-    <Pressable onPress={onPress} style={[styles.action, { backgroundColor: color }]}
-      accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Animated.View style={style}><Text style={styles.actionText}>{label}</Text></Animated.View>
-    </Pressable>
-  );
-}
+// Action({ label, color, onPress, drag, side }): Pressable (84pt wide, hidden from accessibility —
+// the row exposes accessibilityActions instead) whose label scales 0.6→1 with the drag
+// SharedValue via useAnimatedStyle + interpolate(..., Extrapolation.CLAMP).
+declare function Action(p: { label: string; color: string; onPress: () => void;
+  drag: SharedValue<number>; side: 'left' | 'right' }): React.JSX.Element;
 
 export function SwipeableRow({
   id, openRowRef, onArchive, onDelete, onToggleRead, unread, disabled, children,
@@ -889,10 +795,6 @@ export function SwipeableRow({
   );
 }
 
-const styles = StyleSheet.create({
-  action: { width: 84, justifyContent: 'center', alignItems: 'center' },
-  actionText: { color: 'white', fontWeight: '600' },
-});
 ```
 
 If the installed RNGH version doesn't forward accessibility props from `ReanimatedSwipeable` to its container, put `accessibilityActions` on the row `Pressable` instead (that's also the element VoiceOver focuses). Full swipe: add a wide action panel and commit in `onSwipeableOpen(direction)`.
@@ -1050,32 +952,11 @@ export default function InboxScreen() {
   );
 }
 
-function Message({ title, body, action }: { title: string; body?: string; action?: { label: string; onPress: () => void } }) {
-  return (
-    <View style={styles.message} accessibilityLiveRegion="polite">
-      <Text style={styles.title} accessibilityRole="header">{title}</Text>
-      {body && <Text style={styles.muted}>{body}</Text>}
-      {action && (
-        <Pressable onPress={action.onPress} accessibilityRole="button" style={styles.button}>
-          <Text style={styles.buttonText}>{action.label}</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: 'white' },
-  banner: { padding: 10, backgroundColor: '#FFF4CE' },
-  search: { margin: 16, padding: 10, borderRadius: 10, backgroundColor: '#F2F2F7', fontSize: 16 },
-  footer: { minHeight: 64, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  message: { paddingTop: 80, paddingHorizontal: 32, alignItems: 'center', gap: 8 },
-  title: { fontSize: 18, fontWeight: '600', textAlign: 'center' },
-  muted: { color: '#666', textAlign: 'center' },
-  link: { color: '#0A84FF', fontWeight: '600' },
-  button: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#0A84FF' },
-  buttonText: { color: 'white', fontWeight: '600' },
-});
+// Message({ title, body?, action? }): centered View with accessibilityLiveRegion="polite", title with
+// accessibilityRole="header", optional muted body and a primary button (accessibilityRole="button").
+declare function Message(p: { title: string; body?: string; action?: { label: string; onPress: () => void } }): React.JSX.Element;
+// styles: screen, banner, search, footer (minHeight 64, centered row), muted, link — use theme tokens.
+declare const styles: Record<'screen' | 'banner' | 'search' | 'footer' | 'muted' | 'link', object>;
 ```
 
 Notes for adapting:

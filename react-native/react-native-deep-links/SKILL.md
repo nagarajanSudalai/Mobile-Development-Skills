@@ -364,30 +364,25 @@ Goal: a user without the app taps a link, installs, opens — and lands on the l
 | D1 | Cold start via universal link (iOS) | Splash → Detail with parent stack; Back → parent |
 | D2 | Cold start via App Link (Android, Play-signed build) | Same as D1; no browser, no chooser |
 | D3 | Warm link while on another tab | Switches tab, pushes Detail; other tab's stack intact |
-| D4 | Warm link to the screen already open with same id | No duplicate push |
+| D4 | Warm link to the screen already open with same id; same URL delivered twice (initial + event, process death) | No duplicate push; handled once |
 | D5 | Custom scheme link | Opens same route as https equivalent |
 | D6 | Link logged out, auth required | Login → after success lands on Detail; pending cleared |
 | D7 | Link during onboarding | Onboarding completes → Detail |
 | D8 | Link pending, app killed during sign-up email verification, reopened within TTL | Resumes target |
-| D9 | Pending link past TTL | Ignored, normal home |
-| D10 | Sign out with pending link | Pending cleared |
-| D11 | Link for another signed-in account | Confirm switch → account switched → Detail |
-| D12 | Link for another portal of active account | Confirm → portal switched → Detail |
+| D9 | Pending link past TTL, or user signs out with a pending link | Ignored / cleared, normal home |
+| D11 | Link for another signed-in account, or another portal of the active account | Confirm switch → switched → Detail |
 | D13 | Link for an account not signed in | Offer sign-in; target after login |
 | D14 | Unknown path | Not-found screen; `link_unmatched` logged |
 | D15 | Malformed params (`/p/abc`, very long, unicode, `%00`) | Not-found or safe fallback; no crash |
-| D16 | Expired one-time token | Expired screen with resend |
-| D17 | Content deleted (404) | "No longer available" screen |
+| D16 | Expired one-time token / content deleted (404) | Expired screen with resend / "No longer available" |
 | D18 | Link while checkout modal has input | Confirm dialog; no silent loss |
-| D19 | Push tap cold start with URL | Same route + stack as D1 |
-| D20 | Widget / quick action cold and warm | Correct route |
+| D19 | Push tap cold start with URL; widget / quick action cold and warm | Same route + stack as D1 |
 | D21 | Email link via click tracker | App opens (branded tracking domain) or web page with working "Open in app" |
 | D22 | Not installed | Web page renders; store link carries referrer |
 | D23 | Deferred: install via link, first open | Lands on content once; second launch normal |
 | D24 | `?next=https://evil.example` | Ignored; stays in app |
 | D25 | Link that would delete/pay | Opens confirmation screen only |
 | D26 | OAuth redirect | Handled by auth flow, not routed as a deep link |
-| D27 | Same URL delivered twice (initial + event, process death) | Handled once |
 | D28 | AASA/assetlinks served with redirect or wrong content type (staging check) | Monitoring alert fires |
 | D29 | Link opened in Safari address bar / same-domain web tap | Web page (expected), banner offers app |
 | D30 | OTA update reload at launch with link | Link survives the reload |
@@ -395,10 +390,8 @@ Goal: a user without the app taps a link, installs, opens — and lands on the l
 ### 14.3 Common bugs to look for in review
 
 - Missing **Play App Signing** SHA-256 in assetlinks → works on local/internal APK, opens browser from the Play Store
-- AASA/assetlinks behind a redirect (`apex → www`, `http → https`, locale), served as `text/html` by an SPA fallback, or blocked by bot protection
-- AASA changes "not working" because Apple's CDN still serves the old file; testing only against the origin
-- `associatedDomains` / `intentFilters` added to `app.json` but shipped via OTA update or without `prebuild` → native config unchanged
-- Universal links tested in **Expo Go** and declared broken
+- AASA/assetlinks behind a redirect (`apex → www`, `http → https`, locale), served as `text/html` by an SPA fallback, or blocked by bot protection; AASA changes tested only against the origin while Apple's CDN still serves the old file
+- `associatedDomains` / `intentFilters` added to `app.json` but shipped via OTA update or without `prebuild` → native config unchanged; universal links tested in **Expo Go** and declared broken
 - Bare iOS `AppDelegate` forwards `openURL` but not `continueUserActivity` → custom scheme works, universal links don't (or scene delegate ignores `connectionOptions` on cold start)
 - Android `launchMode` changed from `singleTask` → second activity/JS instance on warm links
 - Claiming the whole domain (`pathPrefix="/"`, AASA `"/": "*"`) → help/legal/blog pages hijacked by the app
@@ -407,8 +400,7 @@ Goal: a user without the app taps a link, installs, opens — and lands on the l
 - Link before login dropped because navigation happened before the auth state hydrated; or pending link never cleared and re-opens on every launch
 - `getInitialURL` handled again after Android activity recreation → old link reopens
 - Params trusted (`useLocalSearchParams` as typed numbers) → crashes on `/p/abc`; `?next=` used as an open redirect
-- Destructive actions (accept invite, unsubscribe, delete) executed on link open
-- Tokens and emails logged with full URLs to analytics/crash tools
+- Destructive actions (accept invite, unsubscribe, delete) executed on link open; tokens and emails logged with full URLs to analytics/crash tools
 - `@react-native-firebase/dynamic-links` or `page.link` URLs still in code/email templates after the FDL shutdown
 - Email click-tracking domain not owned/verified → email CTAs never open the app
 - Staging domains or `?mode=developer` left in production entitlements
@@ -420,7 +412,7 @@ When asked to **review/audit**:
 2. **Verification status per domain**: AASA and assetlinks fetch results (status, content type, redirects, app ids, fingerprints incl. Play App Signing), plus `pm get-app-links` output if available
 3. **Checklist results**: sections 2–13 with ✅ Pass / ❌ Fail / ⚠️ Needs check, with file:line
 4. **Critical issues first** (links open the browser, lost links on login, open redirects, actions from links, wrong account data) with fix code
-5. **Testing gaps**: D1–D30 not covered, plus the unit tests to add
+5. **Testing gaps**: §14.2 scenarios not covered, plus the unit tests to add
 
 When asked to **implement**: confirm versions and Expo vs bare, write the link spec, start from the Appendix (parser + tests first), configure domains and native setup, wire the router, then gating/pending links, then other entry points. List what must be verified on device: Play-signed build, real email via the ESP, cold start on both platforms, AASA via the Apple CDN.
 
@@ -437,24 +429,17 @@ Assumes Expo SDK 53+ (or bare RN 0.77+), `expo-linking`, either **React Navigati
 ```ts
 // src/links/routes.ts
 export type Route =
-  | { name: 'home' }
-  | { name: 'product'; id: string }
-  | { name: 'order'; id: string }
-  | { name: 'invite'; token: string }
-  | { name: 'resetPassword'; token: string }
-  | { name: 'notificationSettings' }
+  | { name: 'home' } | { name: 'notificationSettings' }
+  | { name: 'product'; id: string } | { name: 'order'; id: string }
+  | { name: 'invite'; token: string } | { name: 'resetPassword'; token: string }
   | { name: 'workspaceItem'; workspaceId: string; itemId: string };
 
 export type Requirement = 'none' | 'auth' | 'loggedOut';
 
+// invite: preview logged-out; accepting requires auth + confirmation
 export const ROUTE_REQUIREMENTS: Record<Route['name'], Requirement> = {
-  home: 'none',
-  product: 'none',
-  order: 'auth',
-  invite: 'none', // preview logged-out; accepting requires auth + confirmation
-  resetPassword: 'loggedOut',
-  notificationSettings: 'auth',
-  workspaceItem: 'auth',
+  home: 'none', product: 'none', order: 'auth', invite: 'none',
+  resetPassword: 'loggedOut', notificationSettings: 'auth', workspaceItem: 'auth',
 };
 
 export const LINK_CONFIG = {
@@ -491,19 +476,12 @@ const MAX_URL_LENGTH = 2048;
 
 function safeUrl(raw: string): URL | null {
   if (!raw || raw.length > MAX_URL_LENGTH) return null;
-  try {
-    return new URL(raw);
-  } catch {
-    return null;
-  }
+  try { return new URL(raw); } catch { return null; }
 }
 
 function attributionFrom(params: URLSearchParams): Attribution {
   const out: Attribution = {};
-  for (const key of ATTRIBUTION_KEYS) {
-    const v = params.get(key);
-    if (v && v.length <= 100) out[key] = v;
-  }
+  for (const key of ATTRIBUTION_KEYS) { const v = params.get(key); if (v && v.length <= 100) out[key] = v; }
   return out;
 }
 
@@ -520,16 +498,10 @@ function segmentsFor(url: URL): string[] | null {
   } else {
     return null;
   }
-  return path
-    .split('/')
-    .filter(Boolean)
-    .map((s) => {
-      try {
-        return decodeURIComponent(s);
-      } catch {
-        return '\u0000'; // invalid encoding → will fail validation below
-      }
-    });
+  // invalid %-encoding becomes '\u0000' and fails validation below
+  return path.split('/').filter(Boolean).map((s) => {
+    try { return decodeURIComponent(s); } catch { return '\u0000'; }
+  });
 }
 
 /** Unwrap a branded click-tracking or legacy wrapper: https://click.example.com/?u=<encoded> or ?link=<encoded>. */
@@ -559,31 +531,26 @@ export function parseLink(raw: string): ParsedLink {
 function matchRoute(segs: string[], q: URLSearchParams): Route | 'oauth' | null {
   const [a, b, c, d] = segs;
   switch (segs.length) {
-    case 0:
-      return { name: 'home' };
-    case 1:
-      if (a === 'reset-password') {
-        const t = q.get('t');
-        return t && TOKEN.test(t) ? { name: 'resetPassword', token: t } : null;
-      }
-      return null;
-    case 2:
-      if (a === 'p') {
-        const m = SLUG_ID.exec(b);
-        return m ? { name: 'product', id: m[1] } : null;
-      }
+    case 0: return { name: 'home' };
+    case 1: {
+      const t = q.get('t');
+      return a === 'reset-password' && t && TOKEN.test(t) ? { name: 'resetPassword', token: t } : null;
+    }
+    case 2: {
+      const m = a === 'p' ? SLUG_ID.exec(b) : null;
+      if (m) return { name: 'product', id: m[1] };
       if (a === 'orders' && ID.test(b)) return { name: 'order', id: b };
       if (a === 'invite' && TOKEN.test(b)) return { name: 'invite', token: b };
       if (a === 'settings' && b === 'notifications') return { name: 'notificationSettings' };
       if (a === 'oauth' && b === 'callback') return 'oauth';
       return null;
+    }
     case 4:
       if (a === 'w' && WORKSPACE.test(b) && c === 'items' && ID.test(d)) {
         return { name: 'workspaceItem', workspaceId: b.toLowerCase(), itemId: d };
       }
       return null;
-    default:
-      return null;
+    default: return null;
   }
 }
 
@@ -599,67 +566,10 @@ export function safeNextPath(next: string | null | undefined): string | null {
 ### A.3 Parser unit tests
 
 ```ts
-// src/links/__tests__/parseLink.test.ts
-import { parseLink, safeNextPath } from '../parseLink';
-
-const route = (url: string) => {
-  const r = parseLink(url);
-  return r.kind === 'route' ? r.route : r.kind;
-};
-
-describe('parseLink', () => {
-  it.each([
-    ['https://example.com/', { name: 'home' }],
-    ['https://example.com/p/123', { name: 'product', id: '123' }],
-    ['https://www.example.com/p/123-red-sneakers', { name: 'product', id: '123' }],
-    ['https://EXAMPLE.com/p/123/', { name: 'product', id: '123' }],
-    ['myapp://p/123', { name: 'product', id: '123' }],
-    ['myapp:///p/123', { name: 'product', id: '123' }],
-    ['https://example.com/orders/987', { name: 'order', id: '987' }],
-    ['https://example.com/settings/notifications', { name: 'notificationSettings' }],
-    ['https://example.com/w/Acme/items/5', { name: 'workspaceItem', workspaceId: 'acme', itemId: '5' }],
-    ['https://example.com/reset-password?t=abcdefghijklmnop1234', { name: 'resetPassword', token: 'abcdefghijklmnop1234' }],
-  ])('%s', (url, expected) => {
-    expect(route(url)).toEqual(expected);
-  });
-
-  it.each([
-    'https://evil.example/p/123',
-    'http://example.com/p/123x',
-    'https://example.com/p/abc',
-    'https://example.com/p/%E0%A4%A',
-    'https://example.com/orders/1%00',
-    'https://example.com/reset-password?t=short',
-    'javascript:alert(1)',
-    'not a url',
-    `https://example.com/p/${'9'.repeat(5000)}`,
-  ])('rejects %s', (url) => {
-    expect(['unknown']).toContain(route(url));
-  });
-
-  it('routes oauth callbacks away from the navigator', () => {
-    expect(route('myapp://oauth/callback?code=x&state=y')).toBe('external');
-  });
-
-  it('unwraps branded click tracking and legacy ?link= wrappers', () => {
-    const inner = encodeURIComponent('https://example.com/p/42?utm_campaign=fall');
-    const r = parseLink(`https://click.example.com/?u=${inner}`);
-    expect(r).toEqual({ kind: 'route', route: { name: 'product', id: '42' }, attribution: { utm_campaign: 'fall' } });
-  });
-
-  it('keeps attribution and ignores unknown params', () => {
-    const r = parseLink('https://example.com/p/1?utm_source=mail&utm_medium=email&foo=bar&src=qr');
-    expect(r.kind === 'route' && r.attribution).toEqual({ utm_source: 'mail', utm_medium: 'email', src: 'qr' });
-  });
-});
-
-describe('safeNextPath', () => {
-  it.each(['/orders/9', '/p/1'])('accepts %s', (p) => expect(safeNextPath(p)).toBe(p));
-  it.each(['https://evil.example', '//evil.example', '/\\evil', '/unknown', '', null])(
-    'rejects %p',
-    (p) => expect(safeNextPath(p as string)).toBeNull(),
-  );
-});
+// src/links/__tests__/parseLink.test.ts (sketch) — it.each over accepted URLs (www, uppercase host,
+// trailing slash, slug, both scheme forms, workspace, reset token) and rejected ones (foreign host, http,
+// bad id, broken %-encoding, %00, short token, javascript:, oversized), oauth -> 'external',
+// click-tracking unwrap keeps attribution, safeNextPath rejects absolute / '//' / '\\' / unknown paths.
 ```
 
 ### A.4 Pending-link store and dedupe
@@ -681,40 +591,24 @@ export const PendingLinkStore = {
     memory = { ...link, savedAt: now };
     // Never persist one-time secrets; keep the route shape only.
     const persisted = sanitizeForStorage(memory);
-    try {
-      await AsyncStorage.setItem(KEY, JSON.stringify(persisted));
-    } catch {
-      /* memory copy still works for this session */
-    }
+    try { await AsyncStorage.setItem(KEY, JSON.stringify(persisted)); } catch { /* memory copy still works */ }
   },
 
   /** Returns the pending link once and clears it. Expired links are dropped. */
   async consume(now = Date.now()): Promise<PendingLink | null> {
     let link = memory;
     if (!link) {
-      try {
-        const raw = await AsyncStorage.getItem(KEY);
-        link = raw ? (JSON.parse(raw) as PendingLink) : null;
-      } catch {
-        link = null;
-      }
+      try { const raw = await AsyncStorage.getItem(KEY); link = raw ? (JSON.parse(raw) as PendingLink) : null; }
+      catch { link = null; }
     }
     await PendingLinkStore.clear();
     if (!link || now - link.savedAt > TTL_MS) return null;
     return link;
   },
 
-  async peek(): Promise<PendingLink | null> {
-    return memory;
-  },
-
   async clear(): Promise<void> {
     memory = null;
-    try {
-      await AsyncStorage.removeItem(KEY);
-    } catch {
-      /* ignore */
-    }
+    try { await AsyncStorage.removeItem(KEY); } catch { /* ignore */ }
   },
 };
 
@@ -739,41 +633,8 @@ export function createDedupe(windowMs = 2000) {
 ```
 
 ```ts
-// src/links/__tests__/pendingLinkStore.test.ts
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { PendingLinkStore, createDedupe } from '../pendingLinkStore';
-
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
-);
-
-beforeEach(async () => {
-  await PendingLinkStore.clear();
-  await AsyncStorage.clear();
-});
-
-it('consumes once', async () => {
-  await PendingLinkStore.save({ route: { name: 'order', id: '1' }, source: 'universal' }, 0);
-  expect((await PendingLinkStore.consume(1000))?.route).toEqual({ name: 'order', id: '1' });
-  expect(await PendingLinkStore.consume(1000)).toBeNull();
-});
-
-it('expires after the TTL', async () => {
-  await PendingLinkStore.save({ route: { name: 'order', id: '1' }, source: 'push' }, 0);
-  expect(await PendingLinkStore.consume(61 * 60 * 1000)).toBeNull();
-});
-
-it('does not persist reset tokens', async () => {
-  await PendingLinkStore.save({ route: { name: 'resetPassword', token: 'x'.repeat(20) }, source: 'universal' });
-  expect(await AsyncStorage.getItem('pendingLink.v1')).not.toContain('xxxx');
-});
-
-it('dedupes the same url inside the window', () => {
-  const accept = createDedupe(2000);
-  expect(accept('https://example.com/p/1', 0)).toBe(true);
-  expect(accept('https://example.com/p/1', 500)).toBe(false);
-  expect(accept('https://example.com/p/1', 3000)).toBe(true);
-});
+// pendingLinkStore.test.ts (sketch): consumes once; expires after TTL; reset tokens never persisted;
+// createDedupe drops the same URL inside the window and accepts it again after.
 ```
 
 ### A.5 Link coordinator (gating, account awareness, analytics)
@@ -785,9 +646,7 @@ import { PendingLinkStore, createDedupe } from './pendingLinkStore';
 import { ROUTE_REQUIREMENTS, type LinkSource, type Route } from './routes';
 
 export type AppGate = {
-  isHydrated: () => boolean;
-  needsOnboarding: () => boolean;
-  isSignedIn: () => boolean;
+  isHydrated: () => boolean; needsOnboarding: () => boolean; isSignedIn: () => boolean;
   /** Resolves which signed-in account/portal owns a route; null = active one or public. */
   resolveOwner: (route: Route) => Promise<{ accountId: string; portalId?: string } | null>;
   activeOwner: () => { accountId: string; portalId?: string } | null;
@@ -795,8 +654,7 @@ export type AppGate = {
 
 export type LinkEffects = {
   navigate: (route: Route, opts: { source: LinkSource; coldStart: boolean }) => void;
-  showNotFound: (path: string) => void;
-  showOnboardingOrLogin: () => void;
+  showNotFound: (path: string) => void; showOnboardingOrLogin: () => void;
   /** Delegates to react-native-multi-account: confirm, switch, then call back. */
   confirmSwitch: (owner: { accountId: string; portalId?: string }, then: () => void) => void;
   confirmSignOutFor: (route: Route) => void;
@@ -821,17 +679,11 @@ export function createLinkCoordinator(gate: AppGate, fx: LinkEffects) {
   }
 
   async function handleRoute(route: Route, source: LinkSource, coldStart: boolean): Promise<void> {
-    if (!gate.isHydrated()) {
-      queue.push(() => void handleRoute(route, source, coldStart));
-      return;
-    }
+    if (!gate.isHydrated()) { queue.push(() => void handleRoute(route, source, coldStart)); return; }
     const req = ROUTE_REQUIREMENTS[route.name];
 
-    if (req === 'loggedOut' && gate.isSignedIn()) {
-      fx.confirmSignOutFor(route);
-      return;
-    }
-    if (gate.needsOnboarding() || (req === 'auth' && !gate.isSignedIn())) {
+    if (req === 'loggedOut' && gate.isSignedIn()) return fx.confirmSignOutFor(route);
+    if (gate.needsOnboarding() || (req === 'auth' && !gate.isSignedIn())) { // save, then gate
       await PendingLinkStore.save({ route, source });
       fx.track('link_gated', { route: route.name, gate: gate.needsOnboarding() ? 'onboarding' : 'auth' });
       fx.showOnboardingOrLogin();
@@ -851,10 +703,7 @@ export function createLinkCoordinator(gate: AppGate, fx: LinkEffects) {
   return {
     handleUrl,
     handleRoute,
-    /** Call when auth/store hydration finishes. */
-    onHydrated() {
-      queue.splice(0).forEach((run) => run());
-    },
+    onHydrated: () => queue.splice(0).forEach((run) => run()), // auth/store hydration finished
     /** Call after login or onboarding completes. */
     async resumePending(): Promise<boolean> {
       const pending = await PendingLinkStore.consume();
@@ -863,8 +712,7 @@ export function createLinkCoordinator(gate: AppGate, fx: LinkEffects) {
       await handleRoute(pending.route, pending.source, false);
       return true;
     },
-    /** Call on sign-out. */
-    clearPending: () => PendingLinkStore.clear(),
+    clearPending: () => PendingLinkStore.clear(), // call on sign-out
   };
 }
 ```
@@ -887,14 +735,9 @@ export function buildLinking(onUrl: (url: string, cold: boolean) => boolean): Li
       screens: {
         Tabs: {
           screens: {
-            HomeTab: {
-              initialRouteName: 'Home', // synthesizes Home beneath Product
-              screens: { Home: '', Product: 'p/:id' },
-            },
-            OrdersTab: {
-              initialRouteName: 'Orders',
-              screens: { Orders: 'orders', Order: 'orders/:id' },
-            },
+            // initialRouteName synthesizes the tab root beneath the deep-linked screen
+            HomeTab: { initialRouteName: 'Home', screens: { Home: '', Product: 'p/:id' } },
+            OrdersTab: { initialRouteName: 'Orders', screens: { Orders: 'orders', Order: 'orders/:id' } },
             SettingsTab: {
               initialRouteName: 'Settings',
               screens: { Settings: 'settings', NotificationSettings: 'settings/notifications' },
@@ -930,10 +773,7 @@ export function buildLinking(onUrl: (url: string, cold: boolean) => boolean): Li
         const url = response.notification.request.content.data?.url;
         if (typeof url === 'string' && onUrl(url, false)) listener(url);
       });
-      return () => {
-        linkSub.remove();
-        pushSub.remove();
-      };
+      return () => { linkSub.remove(); pushSub.remove(); };
     },
   };
 }
@@ -968,11 +808,11 @@ import type { Route } from './routes';
 export function routeToHref(route: Route): string {
   switch (route.name) {
     case 'home': return '/';
+    case 'notificationSettings': return '/settings/notifications';
     case 'product': return `/p/${encodeURIComponent(route.id)}`;
     case 'order': return `/orders/${encodeURIComponent(route.id)}`;
     case 'invite': return `/invite/${encodeURIComponent(route.token)}`;
     case 'resetPassword': return `/reset-password?t=${encodeURIComponent(route.token)}`;
-    case 'notificationSettings': return '/settings/notifications';
     case 'workspaceItem':
       return `/w/${encodeURIComponent(route.workspaceId)}/items/${encodeURIComponent(route.itemId)}`;
   }
@@ -980,52 +820,11 @@ export function routeToHref(route: Route): string {
 ```
 
 ```tsx
-// app/(app)/_layout.tsx — gate authenticated routes, keep the target as ?next=
-import { Redirect, Stack, usePathname, useGlobalSearchParams } from 'expo-router';
-import { useSession } from '../../src/session';
-
-export const unstable_settings = { initialRouteName: 'index' }; // Home beneath deep-linked screens
-
-export default function AppLayout() {
-  const { status } = useSession();
-  const pathname = usePathname();
-  const params = useGlobalSearchParams();
-  if (status === 'loading') return null; // splash stays up (SplashScreen.preventAutoHideAsync)
-  if (status === 'signedOut') {
-    const qs = new URLSearchParams(
-      Object.entries(params).flatMap(([k, v]) => (typeof v === 'string' ? [[k, v]] : [])),
-    ).toString();
-    const next = encodeURIComponent(pathname + (qs ? `?${qs}` : ''));
-    return <Redirect href={`/login?next=${next}`} />;
-  }
-  return <Stack />;
-}
-```
-
-```tsx
-// app/login.tsx (excerpt) — resume safely after sign-in
-import { router, useLocalSearchParams } from 'expo-router';
-import { safeNextPath } from '../src/links/parseLink';
-
-export function useResumeAfterLogin() {
-  const { next } = useLocalSearchParams<{ next?: string }>();
-  return () => {
-    const target = safeNextPath(next);
-    router.replace(target ?? '/'); // replace: Login must not stay below the target
-  };
-}
-```
-
-```tsx
-// app/p/[id].tsx — params are untrusted strings
-import { useLocalSearchParams } from 'expo-router';
-import { Redirect } from 'expo-router';
-
-export default function ProductScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
-  if (!id || !/^[0-9]{1,18}$/.test(id)) return <Redirect href="/not-found" />;
-  return <ProductDetail id={id} />; // handles 404/410 with a "no longer available" state
-}
+// Sketch, remaining Expo Router pieces:
+// app/(app)/_layout.tsx — export unstable_settings = { initialRouteName: 'index' } (Home beneath deep-linked
+//   screens); while loading return null (splash up); if signed out <Redirect href={`/login?next=${encoded path+query}`} />.
+// app/login.tsx — after sign-in router.replace(safeNextPath(next) ?? '/') so Login never stays below the target.
+// app/p/[id].tsx — params are untrusted: validate id with the parser's regex, else <Redirect href="/not-found" />.
 ```
 
 Push taps in Expo Router: in the root layout, subscribe with `Notifications.addNotificationResponseReceivedListener` and read `useLastNotificationResponse()` for cold start; run `data.url` through `parseLink` and `router.push(routeToHref(route))` (dedupe with `createDedupe`).
@@ -1033,42 +832,11 @@ Push taps in Expo Router: in the root layout, subscribe with `Notifications.addN
 ### A.8 Native and app config
 
 ```ts
-// app.config.ts
-import type { ExpoConfig } from 'expo/config';
-
-const env = process.env.APP_ENV ?? 'production';
-const domain = env === 'production' ? 'example.com' : 'staging.example.com';
-
-const config: ExpoConfig = {
-  name: 'Example',
-  slug: 'example',
-  scheme: env === 'production' ? 'myapp' : 'myapp-staging',
-  ios: {
-    bundleIdentifier: env === 'production' ? 'com.example.app' : 'com.example.app.staging',
-    associatedDomains: [`applinks:${domain}`, `applinks:www.${domain}`, `applinks:click.${domain}`],
-  },
-  android: {
-    package: env === 'production' ? 'com.example.app' : 'com.example.app.staging',
-    intentFilters: [
-      {
-        action: 'VIEW',
-        autoVerify: true,
-        category: ['BROWSABLE', 'DEFAULT'],
-        data: [
-          { scheme: 'https', host: domain, pathPrefix: '/p/' },
-          { scheme: 'https', host: domain, pathPrefix: '/orders' },
-          { scheme: 'https', host: domain, pathPrefix: '/invite/' },
-          { scheme: 'https', host: domain, pathPrefix: '/w/' },
-          { scheme: 'https', host: domain, path: '/reset-password' },
-          { scheme: 'https', host: `www.${domain}`, pathPrefix: '/p/' },
-        ],
-      },
-    ],
-  },
-  plugins: [['expo-router', { origin: `https://${domain}` }], 'expo-notifications'],
-};
-
-export default config;
+// app.config.ts (sketch): per APP_ENV pick domain + scheme ('myapp' / 'myapp-staging') + bundle id/package;
+// ios.associatedDomains = applinks:<domain>, applinks:www.<domain>, applinks:click.<domain>;
+// android.intentFilters = [{ action: 'VIEW', autoVerify: true, category: ['BROWSABLE','DEFAULT'],
+//   data: [{ scheme: 'https', host: domain, pathPrefix: '/p/' }, ...one entry per claimed prefix/path] }];
+// plugins: [['expo-router', { origin: `https://${domain}` }], 'expo-notifications'].
 ```
 
 ```swift
@@ -1088,33 +856,9 @@ func application(_ application: UIApplication, continue userActivity: NSUserActi
 ```
 
 ```xml
-<!-- android/app/src/main/AndroidManifest.xml (bare) -->
-<activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" ...>
-  <intent-filter>
-    <action android:name="android.intent.action.MAIN" />
-    <category android:name="android.intent.category.LAUNCHER" />
-  </intent-filter>
-  <!-- Custom scheme -->
-  <intent-filter>
-    <action android:name="android.intent.action.VIEW" />
-    <category android:name="android.intent.category.DEFAULT" />
-    <category android:name="android.intent.category.BROWSABLE" />
-    <data android:scheme="myapp" />
-  </intent-filter>
-  <!-- Verified App Links: only claimed paths -->
-  <intent-filter android:autoVerify="true">
-    <action android:name="android.intent.action.VIEW" />
-    <category android:name="android.intent.category.DEFAULT" />
-    <category android:name="android.intent.category.BROWSABLE" />
-    <data android:scheme="https" android:host="example.com" />
-    <data android:scheme="https" android:host="www.example.com" />
-    <data android:pathPrefix="/p/" />
-    <data android:pathPrefix="/orders" />
-    <data android:pathPrefix="/invite/" />
-    <data android:pathPrefix="/w/" />
-    <data android:path="/reset-password" />
-  </intent-filter>
-</activity>
+<!-- AndroidManifest.xml (bare, sketch): MainActivity exported, launchMode="singleTask"; one VIEW/BROWSABLE
+     filter for <data android:scheme="myapp" />; one android:autoVerify="true" filter with https hosts
+     example.com + www.example.com and only the claimed pathPrefix/path entries (/p/, /orders, /invite/, /w/, /reset-password). -->
 ```
 
 Note: `<data>` elements inside one intent filter are merged (every scheme × host × path combination), so keep only hosts you verify in the same filter.
@@ -1123,24 +867,16 @@ Note: `<data>` elements inside one intent filter are merged (every scheme × hos
 
 ```json
 {
-  "applinks": {
-    "details": [
-      {
-        "appIDs": ["TEAMID.com.example.app"],
-        "components": [
-          { "/": "/oauth/*", "exclude": true, "comment": "web-handled auth" },
-          { "/": "/help/*", "exclude": true },
-          { "/": "/p/*" },
-          { "/": "/orders", "comment": "list" },
-          { "/": "/orders/*" },
-          { "/": "/invite/*" },
-          { "/": "/w/*/items/*" },
-          { "/": "/settings/notifications" },
-          { "/": "/reset-password", "?": { "t": "?*" } }
-        ]
-      }
+  "applinks": { "details": [{
+    "appIDs": ["TEAMID.com.example.app"],
+    "components": [
+      { "/": "/oauth/*", "exclude": true, "comment": "web-handled auth" },
+      { "/": "/help/*", "exclude": true },
+      { "/": "/p/*" }, { "/": "/orders", "comment": "list" }, { "/": "/orders/*" },
+      { "/": "/invite/*" }, { "/": "/w/*/items/*" }, { "/": "/settings/notifications" },
+      { "/": "/reset-password", "?": { "t": "?*" } }
     ]
-  },
+  }] },
   "webcredentials": { "apps": ["TEAMID.com.example.app"] }
 }
 ```
@@ -1148,72 +884,18 @@ Note: `<data>` elements inside one intent filter are merged (every scheme × hos
 ### A.10 assetlinks.json
 
 ```json
-[
-  {
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "com.example.app",
-      "sha256_cert_fingerprints": [
-        "AA:BB:...:PLAY_APP_SIGNING_KEY_SHA256",
-        "CC:DD:...:UPLOAD_OR_EAS_KEY_SHA256"
-      ]
-    }
-  }
-]
+[{ "relation": ["delegate_permission/common.handle_all_urls"],
+   "target": { "namespace": "android_app", "package_name": "com.example.app",
+               "sha256_cert_fingerprints": ["AA:BB:...:PLAY_APP_SIGNING_KEY_SHA256", "CC:DD:...:UPLOAD_OR_EAS_KEY_SHA256"] } }]
 ```
 
 ### A.11 Hosting check (CI / synthetic monitor)
 
 ```ts
-// scripts/check-link-files.ts — run with `npx tsx scripts/check-link-files.ts`
-const DOMAINS = ['example.com', 'www.example.com', 'click.example.com'];
-const APP_ID = 'TEAMID.com.example.app';
-const PACKAGE = 'com.example.app';
-const PLAY_SIGNING_SHA = process.env.PLAY_SIGNING_SHA256 ?? '';
-
-async function check(url: string, assert: (body: unknown) => string | null): Promise<string[]> {
-  const res = await fetch(url, { redirect: 'manual' });
-  const errors: string[] = [];
-  if (res.status !== 200) errors.push(`${url}: status ${res.status} (redirects are not allowed)`);
-  const type = res.headers.get('content-type') ?? '';
-  if (!type.includes('application/json')) errors.push(`${url}: content-type "${type}"`);
-  if (res.status === 200) {
-    try {
-      const problem = assert(await res.json());
-      if (problem) errors.push(`${url}: ${problem}`);
-    } catch {
-      errors.push(`${url}: body is not JSON`);
-    }
-  }
-  return errors;
-}
-
-async function main() {
-  const errors: string[] = [];
-  for (const d of DOMAINS) {
-    errors.push(
-      ...(await check(`https://${d}/.well-known/apple-app-site-association`, (b) =>
-        JSON.stringify(b).includes(APP_ID) ? null : `missing ${APP_ID}`)),
-      ...(await check(`https://${d}/.well-known/assetlinks.json`, (b) => {
-        const s = JSON.stringify(b);
-        if (!s.includes(PACKAGE)) return `missing ${PACKAGE}`;
-        if (PLAY_SIGNING_SHA && !s.toUpperCase().includes(PLAY_SIGNING_SHA.toUpperCase())) return 'missing Play App Signing SHA-256';
-        return null;
-      })),
-    );
-    // What Apple devices actually get:
-    const cdn = await fetch(`https://app-site-association.cdn-apple.com/a/v1/${d}`);
-    if (cdn.status !== 200) errors.push(`Apple CDN for ${d}: status ${cdn.status}`);
-  }
-  if (errors.length) {
-    console.error(errors.join('\n'));
-    process.exit(1);
-  }
-  console.log('Link association files OK');
-}
-
-main();
+// scripts/check-link-files.ts (sketch): for each domain fetch /.well-known/apple-app-site-association and
+// /.well-known/assetlinks.json with redirect: 'manual'; fail on non-200, non-application/json, non-JSON body,
+// missing TEAMID.bundle / package / Play App Signing SHA-256; also fetch
+// https://app-site-association.cdn-apple.com/a/v1/<domain> (what devices actually get); exit 1 on any error.
 ```
 
 Notes for adapting:

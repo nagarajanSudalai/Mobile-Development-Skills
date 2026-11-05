@@ -339,11 +339,9 @@ import Foundation
 
 struct Item: Identifiable, Hashable, Sendable, Decodable {
     let id: String            // stable server ID
-    var title: String
-    var subtitle: String
+    var title: String, subtitle: String
     var thumbnailURL: URL?
-    var isRead: Bool
-    var updatedAt: Date
+    var isRead: Bool, updatedAt: Date
 }
 
 struct Page<T: Sendable>: Sendable {
@@ -385,12 +383,8 @@ enum LoadError: Error, Equatable, Sendable {
 }
 
 enum ListPhase: Equatable, Sendable {
-    case idle
-    case loadingInitial
+    case idle, loadingInitial, loadingMore, refreshing, empty
     case loaded                 // more pages may exist
-    case loadingMore
-    case refreshing
-    case empty
     case error(LoadError)       // initial load failed, no content
     case loadMoreError(LoadError) // content kept, footer shows retry
     case endReached
@@ -586,46 +580,9 @@ final class ItemListViewModel {
 ### A.4 Shimmer modifier (Reduce Motion aware) and skeleton rows
 
 ```swift
-struct Shimmer: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var phase: CGFloat = -1
-
-    func body(content: Content) -> some View {
-        content
-            .redacted(reason: .placeholder)
-            .overlay {
-                if !reduceMotion {
-                    GeometryReader { geo in
-                        LinearGradient(
-                            colors: [.clear, .white.opacity(0.45), .clear],
-                            startPoint: .leading, endPoint: .trailing)
-                        .frame(width: geo.size.width * 0.6)
-                        .offset(x: phase * geo.size.width * 1.6)
-                        .blendMode(.plusLighter)
-                    }
-                    .mask(content.redacted(reason: .placeholder))
-                    .allowsHitTesting(false)
-                }
-            }
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) { phase = 1 }
-            }
-    }
-}
-
-extension View {
-    func shimmering(_ active: Bool = true) -> some View {
-        modifier(ShimmerIfNeeded(active: active))
-    }
-}
-
-private struct ShimmerIfNeeded: ViewModifier {
-    let active: Bool
-    func body(content: Content) -> some View {
-        if active { content.modifier(Shimmer()) } else { content }
-    }
-}
+// Sketch: `Shimmer` ViewModifier = content.redacted(reason: .placeholder) + a moving LinearGradient
+// overlay masked to the redacted content, animated with .linear(1.2s).repeatForever; skipped entirely
+// when @Environment(\.accessibilityReduceMotion) is true. `View.shimmering(_ active:)` applies it conditionally.
 
 extension Item {
     static func placeholder(_ n: Int) -> Item {
@@ -674,15 +631,7 @@ actor ThumbnailPipeline {
         return URLSession(configuration: config)
     }()
 
-    init() {
-        Task { await observeMemoryWarnings() }
-    }
-
-    private func observeMemoryWarnings() async {
-        for await _ in NotificationCenter.default.notifications(named: UIApplication.didReceiveMemoryWarningNotification) {
-            memory.removeAllObjects()
-        }
-    }
+    // init: also observe UIApplication.didReceiveMemoryWarningNotification → memory.removeAllObjects().
 
     nonisolated static func key(_ url: URL, _ pixelSize: CGSize) -> String {
         "\(url.absoluteString)|\(Int(pixelSize.width))x\(Int(pixelSize.height))"
@@ -728,39 +677,10 @@ actor ThumbnailPipeline {
     }
 }
 
-struct Thumbnail: View {
-    let url: URL?
-    var size: CGFloat = 56
-    @Environment(\.displayScale) private var scale
-    @State private var image: UIImage?
-    @State private var failed = false
-
-    private var pixelSize: CGSize { CGSize(width: size * scale, height: size * scale) }
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill().transition(.opacity)
-            } else if failed {
-                Image(systemName: "photo").foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: size, height: size)            // fixed size: no row resize
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityHidden(true)
-        .task(id: url) {                             // cancels on disappear / reuse
-            guard let url else { return }
-            if let hit = ThumbnailPipeline.shared.cached(url, pixelSize: pixelSize) {
-                image = hit; return                  // memory hit: no fade
-            }
-            image = nil; failed = false
-            let loaded = await ThumbnailPipeline.shared.image(for: url, pixelSize: pixelSize)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeIn(duration: 0.2)) { image = loaded; failed = loaded == nil }
-        }
-    }
-}
+// Sketch: `Thumbnail(url:size:)` — fixed-size frame (no row resize), placeholder fill, pixelSize =
+// size * displayScale; `.task(id: url)` (cancels on disappear/reuse): synchronous
+// `ThumbnailPipeline.shared.cached` hit → assign with no fade; else `image(for:pixelSize:)`,
+// check `Task.isCancelled`, fade in, show a "photo" symbol on failure; `.accessibilityHidden(true)`.
 ```
 
 UIKit equivalent: in the cell, store `var imageTask: Task<Void, Never>?` and `representedID`; in `prepareForReuse()` cancel the task and set `imageView.image = nil`; on completion check `representedID == item.id` before assigning. Implement `UICollectionViewDataSourcePrefetching` to warm the pipeline for upcoming index paths.
@@ -770,63 +690,13 @@ UIKit equivalent: in the cell, store `var imageTask: Task<Void, Never>?` and `re
 ```swift
 import Network
 
-struct ItemRow: View {
-    let item: Item
-    var body: some View {
-        HStack(spacing: 12) {
-            Thumbnail(url: item.thumbnailURL)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title).font(.headline).fontWeight(item.isRead ? .regular : .semibold)
-                Text(item.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer(minLength: 0)
-            if !item.isRead {
-                Circle().fill(.tint).frame(width: 10, height: 10).accessibilityHidden(true)
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(item.isRead ? "" : "Unread")
-    }
-}
-
-struct LoadMoreFooter: View {
-    let state: FooterState
-    let retry: () -> Void
-    var body: some View {
-        Group {
-            switch state {
-            case .hidden: Color.clear.frame(height: 1)
-            case .loading: ProgressView().accessibilityLabel("Loading more")
-            case .error(let e):
-                VStack(spacing: 8) {
-                    Text("Couldn't load more. \(e.message)").font(.footnote).foregroundStyle(.secondary)
-                    Button("Retry", action: retry).buttonStyle(.bordered)
-                }
-            case .end:
-                Text("You're all caught up").font(.footnote).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .listRowSeparator(.hidden)
-    }
-}
-
-@MainActor
-@Observable
-final class Connectivity {
-    private(set) var isOnline = true
-    private let monitor = NWPathMonitor()
-    init() {
-        monitor.pathUpdateHandler = { [weak self] path in
-            let online = path.status == .satisfied
-            Task { @MainActor in self?.isOnline = online }
-        }
-        monitor.start(queue: DispatchQueue(label: "connectivity"))
-    }
-    deinit { monitor.cancel() }
-}
+// Sketches:
+// - ItemRow(item:): HStack { Thumbnail; VStack { title (.semibold when unread); subtitle .lineLimit(2) };
+//   unread dot (accessibilityHidden) }, .accessibilityElement(children: .combine), value "Unread".
+// - LoadMoreFooter(state: FooterState, retry:): .hidden → 1pt clear; .loading → ProgressView("Loading more");
+//   .error → message + bordered Retry; .end → "You're all caught up"; .listRowSeparator(.hidden).
+// - Connectivity: @MainActor @Observable wrapper over NWPathMonitor; isOnline = path.status == .satisfied,
+//   hopped to the main actor; monitor.cancel() in deinit.
 
 struct ItemListScreen: View {
     @State var vm: ItemListViewModel
@@ -850,13 +720,8 @@ struct ItemListScreen: View {
                 if online { vm.connectivityRestored() }
             }
             .sensoryFeedback(.success, trigger: deletedCount)
-            .safeAreaInset(edge: .top) {
-                if !connectivity.isOnline && !vm.items.isEmpty {
-                    Label("Offline — showing saved items", systemImage: "wifi.slash")
-                        .font(.footnote).padding(8).frame(maxWidth: .infinity)
-                        .background(.thinMaterial)
-                }
-            }
+            // + .safeAreaInset(edge: .top): "Offline — showing saved items" banner when
+            //   !connectivity.isOnline && !vm.items.isEmpty.
     }
 
     @ViewBuilder private var content: some View {
@@ -879,14 +744,8 @@ struct ItemListScreen: View {
                                 vm.delete(item); deletedCount += 1  // delete with undo
                             } label: { Label("Delete", systemImage: "trash") }
                         }
-                        .contextMenu {                           // pointer / long-press alternative
-                            Button(item.isRead ? "Mark Unread" : "Mark Read") { vm.toggleRead(item) }
-                            Button("Delete", role: .destructive) { vm.delete(item); deletedCount += 1 }
-                        }
-                        .accessibilityActions {                  // VoiceOver alternative
-                            Button(item.isRead ? "Mark Unread" : "Mark Read") { vm.toggleRead(item) }
-                            Button("Delete") { vm.delete(item); deletedCount += 1 }
-                        }
+                        // Also mirror both actions in .contextMenu { } (pointer / long-press) and
+                        // .accessibilityActions { } (VoiceOver) with the same buttons.
                 }
                 if !vm.items.isEmpty {
                     LoadMoreFooter(state: vm.phase.footer) { vm.loadMore() }
@@ -920,22 +779,11 @@ struct ItemListScreen: View {
         }
     }
 
+    // toastView: capsule with vm.toast + "Undo" (when vm.lastDeletedID != nil → vm.undoDelete(id));
+    // .task(id: toast) posts AccessibilityNotification.Announcement, sleeps 4 s, then clears toast + undo.
     @ViewBuilder private var toastView: some View {
         if let toast = vm.toast {
-            HStack {
-                Text(toast)
-                if let id = vm.lastDeletedID {
-                    Button("Undo") { vm.undoDelete(id) }.bold()
-                }
-            }
-            .padding(12).background(.regularMaterial, in: Capsule())
-            .padding(.bottom, 16)
-            .task(id: toast) {
-                AccessibilityNotification.Announcement(toast).post()
-                try? await Task.sleep(for: .seconds(4))
-                vm.toast = nil
-                vm.clearUndo()
-            }
+            Text(toast)   // see sketch above
         }
     }
 }

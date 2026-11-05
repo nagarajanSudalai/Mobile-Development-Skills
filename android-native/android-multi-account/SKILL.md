@@ -108,12 +108,7 @@ push: FCM, server maps token -> [accountIds] | billing: per account (obfuscatedA
 
 ### 2.2 Session model
 
-```kotlin
-data class Session(val account: AccountRecord, val portal: PortalRecord?)  // portal null = account has no portals yet
-sealed interface SessionState { Loading; NoAccounts; Active(Session); Switching(from, to) }
-```
-
-`Switching` is a first-class state: UI shows a full-screen switch transition, requests are blocked, and nothing can read the old graph.
+`SessionState` (`Loading`, `NoAccounts`, `NeedsReauth`, `NoPortal`, `Active(account, portal)`, `Switching`) — see A.6. `Switching` is a first-class state: UI shows a full-screen switch transition, requests are blocked, and nothing can read the old graph.
 
 ## 3. Secure token storage
 
@@ -145,22 +140,7 @@ sealed interface SessionState { Loading; NoAccounts; Active(Session); Switching(
 
 ### 3.3 Backup rules example
 
-```xml
-<!-- res/xml/data_extraction_rules.xml (API 31+) -->
-<data-extraction-rules>
-  <cloud-backup>
-    <exclude domain="file" path="datastore/secure_tokens.preferences_pb"/>
-    <exclude domain="database" path="."/>           <!-- all acct_*.db -->
-    <exclude domain="file" path="accounts/"/>
-    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs__.xml"/>
-  </cloud-backup>
-  <device-transfer>
-    <exclude domain="file" path="datastore/secure_tokens.preferences_pb"/>
-    <exclude domain="database" path="."/>
-    <exclude domain="file" path="accounts/"/>
-  </device-transfer>
-</data-extraction-rules>
-```
+`res/xml/data_extraction_rules.xml` (API 31+): in both `<cloud-backup>` and `<device-transfer>`, `<exclude>` `file` `datastore/secure_tokens.preferences_pb`, `database` `.` (all `acct_*.db`), `file` `accounts/`; in cloud backup also the legacy ESP sharedpref file and `tink_keyset_prefs.xml`.
 
 Plus the equivalent `res/xml/backup_rules.xml` for `android:fullBackupContent` on API 23–30. If the app sets `android:allowBackup="false"`, none of this is needed — but confirm it's intentional.
 
@@ -283,8 +263,7 @@ Usual answer: **DB per account, `portal_id` column + index on portal-scoped tabl
 - [ ] OAuth via Custom Tabs/AppAuth: use `prompt=login` / `select_account` so the browser's existing session for A doesn't silently log in A again; distinct `state` per attempt.
 - [ ] **Duplicate detection** after token exchange, by `(region, serverUserId)`: if already present → update its tokens (re-auth), switch to it, show "Already signed in as a@x.com". Don't create a second record.
 - [ ] **Different region**: region picked before login or discovered from a lookup endpoint; stored in the account record; OkHttp base URL per account (Retrofit instance per account, or a `HostSelectionInterceptor` constructed with the account's base URL).
-- [ ] Limit reached → explain before starting login, not after.
-- [ ] On success: write tokens → write registry → fetch portals → switch to new account (product decision: most apps switch immediately).
+- [ ] Limit reached → explain before starting login, not after. On success: write tokens → write registry → fetch portals → switch to new account (product decision: most apps switch immediately).
 - [ ] Credential Manager: saving passwords/passkeys per account is fine; don't auto-select a credential for "Add account".
 
 ## 9. Sign out
@@ -293,9 +272,7 @@ Usual answer: **DB per account, `portal_id` column + index on portal-scoped tabl
 - [ ] Order: mark `Removing` → (if active) switch away first → server revoke (best effort, with timeout; `/logout` + unregister push token for that account) → cancel account's WorkManager by tag → delete DB files (`context.deleteDatabase(name)` removes -wal/-shm) → delete per-account dirs (files + cache) → delete per-account DataStore → delete token blob (and Keystore alias if per-account) → remove registry entry → clear billing/analytics identity if it was active.
 - [ ] Next active account: most recently used remaining; if none → logged-out start screen with back stack cleared.
 - [ ] Cleanup is **resumable**: if the process dies mid-cleanup, the `Removing` state makes startup finish it.
-- [ ] Server revoke failure doesn't block local removal.
-- [ ] Notifications from that account removed (`NotificationManager.cancel` by tag/group for account).
-- [ ] Dynamic shortcuts, widgets, Glance state referencing the account removed.
+- [ ] Server revoke failure doesn't block local removal. Remove that account's notifications (cancel by tag/group), dynamic shortcuts, widgets and Glance state.
 
 ## 10. Push per account and portal
 
@@ -365,65 +342,54 @@ Usual answer: **DB per account, `portal_id` column + index on portal-scoped tabl
 
 | # | Scenario | Expected |
 |---|---|---|
-| M1 | Add second account | Login with clean client; A untouched until success; switch to B |
+| M1 | Add second account; add account in other region | Login with clean client; A untouched until success; switch to B; b's requests go to B's base URL; A's to A's |
 | M2 | Add account already signed in | No duplicate; tokens updated; switched to it; message shown |
-| M3 | Add account in other region | B's requests go to B's base URL; A's to A's |
-| M4 | Switch account mid-request (slow API) | A's response discarded; never written to B's DB or shown |
-| M5 | Switch account during paging/scroll | Lists reset; no A rows in B |
-| M6 | Rapid double switch A→B→A | One final graph (A); no crash; no leaked component |
-| M7 | Switch portal | Account token kept; `X-Portal-Id` updated; portal home shown; switch back instant from cache |
-| M8 | Portal revoked mid-session (403) | Message; moved to next portal; portal data purged |
-| M9 | Role downgraded in active portal | Admin UI hidden after refresh; in-flight admin action → graceful 403 |
-| M10 | Account with zero portals | Empty state with create/join/invites |
-| M11 | 300 portals | Picker search + recents; smooth scroll |
-| M12 | Access token expired, 10 parallel calls | One refresh; all retried once |
-| M13 | Refresh token revoked on inactive account B | A unaffected; B badged "Sign in again" in switcher |
-| M14 | Refresh token revoked on active account | Re-auth screen for that account; option to switch |
-| M15 | Push for active account+portal | Shown; tap navigates directly |
-| M16 | Push for inactive account | Shown with account label; tap switches account, then navigates |
-| M17 | Push for inactive portal of active account | Tap switches portal, then navigates |
-| M18 | Push for removed account | Dropped; server unregister requested |
-| M19 | FCM token refresh | Re-registered for all accounts |
-| M20 | Deep link to portal of other signed-in account | Confirmation; switch; navigate |
-| M21 | Deep link to portal no account can access | Access message / add account |
-| M22 | Sign out non-active account | Its data/files/notifications removed; active untouched |
-| M23 | Sign out active account | Switch to most recent other; data wiped |
-| M24 | Sign out last account | Logged-out start; analytics/billing identity cleared; nothing left on disk |
-| M25 | Process killed mid-sign-out | Cleanup completes on next start |
-| M26 | Backup restored to new device | Keystore keys missing → accounts "Sign in again" or absent; no crash |
-| M27 | ESP → new store migration | Tokens readable after upgrade; ESP file removed |
-| M28 | Process death after switch | Same (account, portal) and last screen restored |
-| M29 | Switch while offline | Switch works from cache; refresh deferred; banner shown |
-| M30 | Purchases after switch | Entitlements reflect B; RevenueCat `logIn(B)` called |
-| M31 | Background sync for inactive account | Uses that account's token and DB; no effect on active UI |
-| M32 | Recents screen on sensitive account | Content hidden |
+| M3 | Switch account mid-request (slow API); switch account during paging/scroll | A's response discarded; never written to B's DB or shown; lists reset; no A rows in B |
+| M4 | Rapid double switch A→B→A | One final graph (A); no crash; no leaked component |
+| M5 | Switch portal | Account token kept; `X-Portal-Id` updated; portal home shown; switch back instant from cache |
+| M6 | Portal revoked mid-session (403) | Message; moved to next portal; portal data purged |
+| M7 | Role downgraded in active portal | Admin UI hidden after refresh; in-flight admin action → graceful 403 |
+| M8 | Account with zero portals | Empty state with create/join/invites |
+| M9 | 300 portals | Picker search + recents; smooth scroll |
+| M10 | Access token expired, 10 parallel calls | One refresh; all retried once |
+| M11 | Refresh token revoked on inactive account B; refresh token revoked on active account | A unaffected; B badged "Sign in again" in switcher; re-auth screen for that account; option to switch |
+| M12 | Push for active account+portal; push for inactive portal of active account | Shown; tap navigates directly; tap switches portal, then navigates |
+| M13 | Push for inactive account | Shown with account label; tap switches account, then navigates |
+| M14 | Push for removed account | Dropped; server unregister requested |
+| M15 | FCM token refresh | Re-registered for all accounts |
+| M16 | Deep link to portal of other signed-in account; deep link to portal no account can access | Confirmation; switch; navigate; access message / add account |
+| M17 | Sign out non-active account | Its data/files/notifications removed; active untouched |
+| M18 | Sign out active account | Switch to most recent other; data wiped |
+| M19 | Sign out last account | Logged-out start; analytics/billing identity cleared; nothing left on disk |
+| M20 | Process killed mid-sign-out | Cleanup completes on next start |
+| M21 | Backup restored to new device; eSP → new store migration | Keystore keys missing → accounts "Sign in again" or absent; no crash; tokens readable after upgrade; ESP file removed |
+| M22 | Process death after switch | Same (account, portal) and last screen restored |
+| M23 | Switch while offline | Switch works from cache; refresh deferred; banner shown |
+| M24 | Purchases after switch | Entitlements reflect B; RevenueCat `logIn(B)` called |
+| M25 | Background sync for inactive account | Uses that account's token and DB; no effect on active UI |
+| M26 | Recents screen on sensitive account | Content hidden |
 
 ## 17. Common bugs to look for in review
 
 - `@Singleton` repository/cache holding user data → A's data visible after switching to B
 - Interceptor reading `sessionManager.current.token` at call time → request started for A retried with B's token (or vice versa)
-- No single-flight refresh → refresh token rotation race logs the user out
-- `Authenticator` without retry limit → infinite 401 loop; `runBlocking` on main thread
+- No single-flight refresh → rotation race logs the user out; `Authenticator` without retry limit → infinite 401 loop; `runBlocking` on main thread
 - One global `X-Portal-Id` header provider → requests for old portal sent with new portal header
 - New `EncryptedSharedPreferences` code added in 2025+; or ESP crashes (`AEADBadTagException`, `KeyStoreException`) uncaught at startup after restore
 - Tokens in plain DataStore / Room / logs; `HttpLoggingInterceptor` at `BODY` in release
 - Encrypted token files included in backup → undecryptable on restore → crash loop
 - Single DB with `account_id` column and a DAO query missing the filter
-- Room DB for old account left open after switch; two instances of the same file
-- HTTP/image disk cache shared across accounts → B sees A's avatars/attachments offline
+- Room DB for old account left open after switch / two instances of the same file; HTTP/image disk cache shared across accounts → B sees A's avatars/attachments offline
 - Account identified by email → duplicate records after email change; re-login as same user creates second account
 - Login for "Add account" using the active account's OkHttpClient
-- ViewModels surviving switch (nav not reset) holding A's repositories
-- `SavedStateHandle` restores a screen for A after cold start while B is active
+- ViewModels surviving switch (nav not reset) holding A's repositories; `SavedStateHandle` restores a screen for A after cold start while B is active
 - Push routed to "active account" instead of payload's account; notification tap with merged extras (`PendingIntent` request code reused)
-- `onNewToken` registering only the active account
-- WorkManager jobs resolving active session instead of their `inputData` account
+- `onNewToken` registering only the active account; WorkManager jobs resolving active session instead of their `inputData` account
 - RevenueCat `logOut()` on every switch (creates anonymous users), entitlements cached across accounts
 - Analytics user id set to email; not cleared on last sign-out
 - Sign-out deleting registry before files → orphaned DBs forever
 - Portal revoked → app keeps showing cached portal data; or treats 403 as sign-out
-- `lastPortalId` stored globally instead of per account
-- WebView cookies shared between accounts
+- `lastPortalId` stored globally instead of per account; WebView cookies shared between accounts
 - AccountManager used as source of truth while user can remove accounts from Settings without the app noticing
 
 ## 18. Output format
@@ -432,7 +398,7 @@ When asked to **review/audit**:
 1. **Summary** — account contract (max accounts, regions, auth, portal model, DB strategy, push, billing), DI framework, library versions (Hilt, Room, DataStore, OkHttp, Tink / security-crypto)
 2. **Checklist results** — sections 2–15 with ✅ Pass / ❌ Fail / ⚠️ Needs check and file:line
 3. **Critical issues first** (cross-account data leaks, token sent to wrong account/portal, refresh races logging users out, plaintext tokens, crash on restore, push opening wrong account) with fix code
-4. **Testing gaps** — M1–M32 not covered, and which need a real device (Keystore, backup, FCM)
+4. **Testing gaps** — M1–M26 not covered, and which need a real device (Keystore, backup, FCM)
 
 When asked to **implement**: fill in the account contract first, then start from the Appendix: copy the registry, secure store, scoped components, session manager and OkHttp auth pieces; delete what the contract doesn't need (per-portal DB, portal tokens, AccountManager); match library versions to the project and verify Hilt/Tink APIs compile; finish with the testing plan items you ran and those left for the user.
 
@@ -448,32 +414,19 @@ When asked to **implement**: fill in the account contract first, then start from
 @Serializable
 data class AccountRecord(
     val id: String,               // "$region:$serverUserId"
-    val serverUserId: String,
-    val region: String,
-    val baseUrl: String,
-    val displayName: String,
-    val email: String,
-    val avatarUrl: String? = null,
-    val addedAt: Long,
-    val lastUsedAt: Long,
+    val serverUserId: String, val region: String, val baseUrl: String,
+    val displayName: String, val email: String, val avatarUrl: String? = null,
+    val addedAt: Long, val lastUsedAt: Long,
     val state: AccountState = AccountState.Active,
-    val lastPortalId: String? = null,
-    val unread: Int = 0,
+    val lastPortalId: String? = null, val unread: Int = 0,
 )
-
 @Serializable enum class AccountState { Active, NeedsReauth, Removing }
 
 @Serializable
 data class PortalRecord(
-    val id: String,
-    val accountId: String,
-    val name: String,
-    val role: Role,
-    val lastUsedAt: Long = 0,
-    val unread: Int = 0,
-    val isDefault: Boolean = false,
+    val id: String, val accountId: String, val name: String, val role: Role,
+    val lastUsedAt: Long = 0, val unread: Int = 0, val isDefault: Boolean = false,
 )
-
 @Serializable enum class Role { Owner, Admin, Member, Guest }
 
 @Serializable
@@ -482,13 +435,7 @@ data class RegistrySnapshot(
     val portals: Map<String, List<PortalRecord>> = emptyMap(), // accountId -> portals
     val activeAccountId: String? = null,
 )
-
-@Serializable
-data class TokenSet(
-    val accessToken: String,
-    val accessExpiresAt: Long,
-    val refreshToken: String,
-)
+@Serializable data class TokenSet(val accessToken: String, val accessExpiresAt: Long, val refreshToken: String)
 
 val String.fileKey: String
     get() = MessageDigest.getInstance("SHA-256").digest(toByteArray())
@@ -549,102 +496,29 @@ class TokenUnreadable(val accountId: String, cause: Throwable) : Exception(cause
 #### ESP migration reader (delete after a few releases)
 
 ```kotlin
-@Suppress("DEPRECATION")
-suspend fun migrateFromEncryptedPrefs(context: Context, store: SecureTokenStore, json: Json) {
-    val name = "secure_prefs_legacy"
-    if (!File(context.filesDir.parent, "shared_prefs/$name.xml").exists()) return
-    runCatching {
-        val master = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        val esp = EncryptedSharedPreferences.create(
-            context, name, master,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-        esp.all.forEach { (k, v) ->
-            if (k.startsWith("tokens_") && v is String) {
-                val accountId = k.removePrefix("tokens_")
-                val tokens = json.decodeFromString(TokenSet.serializer(), v)
-                store.write(accountId, tokens)
-                check(store.read(accountId) == tokens)
-            }
-        }
-    } // on failure: accounts will surface as NeedsReauth
-    context.deleteSharedPreferences(name)
-}
+// migrateFromEncryptedPrefs(context, store, json): if shared_prefs/secure_prefs_legacy.xml exists, open it with
+// EncryptedSharedPreferences (MasterKey AES256_GCM), re-write each "tokens_<accountId>" via store.write, verify
+// store.read == tokens, then context.deleteSharedPreferences(name). Decrypt failure → accounts surface as NeedsReauth.
 ```
 
 ### A.3 Account registry
 
 ```kotlin
+/** DataStore<RegistrySnapshot> ("account_registry.json", JSON serializer → CorruptionException on bad data). */
 @Singleton
-class AccountRegistry @Inject constructor(
-    @ApplicationContext context: Context,
-    private val tokens: SecureTokenStore,
-    private val json: Json,
-) {
-    private val store: DataStore<RegistrySnapshot> = DataStoreFactory.create(
-        serializer = RegistrySerializer(json),
-        produceFile = { context.dataStoreFile("account_registry.json") },
-    )
-    val state: Flow<RegistrySnapshot> = store.data
-
-    suspend fun snapshot() = store.data.first()
+class AccountRegistry @Inject constructor(/* context, tokens: SecureTokenStore, json */) {
+    val state: Flow<RegistrySnapshot> = TODO()
+    suspend fun snapshot(): RegistrySnapshot = state.first()
 
     sealed interface AddResult { data class Added(val id: String) : AddResult; data class Existing(val id: String) : AddResult; data object LimitReached : AddResult }
 
-    suspend fun addOrUpdate(record: AccountRecord, tokenSet: TokenSet, maxAccounts: Int = 5): AddResult {
-        val existing = snapshot().accounts.firstOrNull { it.id == record.id }
-        if (existing == null && snapshot().accounts.size >= maxAccounts) return AddResult.LimitReached
-        tokens.write(record.id, tokenSet)                    // 1. secret first
-        store.updateData { s ->                              // 2. then metadata
-            val others = s.accounts.filterNot { it.id == record.id }
-            val merged = existing?.copy(
-                displayName = record.displayName, email = record.email, avatarUrl = record.avatarUrl,
-                state = AccountState.Active, lastUsedAt = record.lastUsedAt,
-            ) ?: record
-            s.copy(accounts = others + merged)
-        }
-        return if (existing == null) AddResult.Added(record.id) else AddResult.Existing(record.id)
-    }
-
-    suspend fun setActive(accountId: String) = store.updateData { s ->
-        s.copy(activeAccountId = accountId, accounts = s.accounts.map {
-            if (it.id == accountId) it.copy(lastUsedAt = System.currentTimeMillis()) else it
-        })
-    }
-
-    suspend fun setLastPortal(accountId: String, portalId: String) = store.updateData { s ->
-        s.copy(accounts = s.accounts.map { if (it.id == accountId) it.copy(lastPortalId = portalId) else it })
-    }
-
-    suspend fun setPortals(accountId: String, portals: List<PortalRecord>) = store.updateData { s ->
-        s.copy(portals = s.portals + (accountId to portals))
-    }
-
-    suspend fun setState(accountId: String, state: AccountState) = store.updateData { s ->
-        s.copy(accounts = s.accounts.map { if (it.id == accountId) it.copy(state = state) else it })
-    }
-
-    suspend fun remove(accountId: String) = store.updateData { s ->
-        s.copy(
-            accounts = s.accounts.filterNot { it.id == accountId },
-            portals = s.portals - accountId,
-            activeAccountId = s.activeAccountId.takeUnless { it == accountId },
-        )
-    }
-
+    // addOrUpdate(record, tokenSet, maxAccounts = 5): LimitReached if new and at cap; tokens.write FIRST, then
+    //   store.updateData merging metadata (existing → state = Active); returns Added / Existing.
+    // setActive(id) (stamps lastUsedAt), setLastPortal(id, portalId), setPortals(id, list), setState(id, state)
+    // remove(id): drop account + its portals; clear activeAccountId if it was active
     fun nextActiveAfterRemoval(s: RegistrySnapshot, removed: String): AccountRecord? =
         s.accounts.filter { it.id != removed && it.state != AccountState.Removing }
             .maxByOrNull { it.lastUsedAt }
-}
-
-private class RegistrySerializer(private val json: Json) : Serializer<RegistrySnapshot> {
-    override val defaultValue = RegistrySnapshot()
-    override suspend fun readFrom(input: InputStream) =
-        runCatching { json.decodeFromString(RegistrySnapshot.serializer(), input.readBytes().decodeToString()) }
-            .getOrElse { throw CorruptionException("registry", it) }
-    override suspend fun writeTo(t: RegistrySnapshot, output: OutputStream) =
-        output.write(json.encodeToString(RegistrySnapshot.serializer(), t).encodeToByteArray())
 }
 ```
 
@@ -659,20 +533,14 @@ private class RegistrySerializer(private val json: Json) : Serializer<RegistrySn
 interface AccountComponent
 
 @DefineComponent.Builder
-interface AccountComponentBuilder {
-    fun account(@BindsInstance account: AccountRecord): AccountComponentBuilder
-    fun build(): AccountComponent
-}
+interface AccountComponentBuilder { fun account(@BindsInstance account: AccountRecord): AccountComponentBuilder; fun build(): AccountComponent }
 
 @PortalScoped
 @DefineComponent(parent = AccountComponent::class)
 interface PortalComponent
 
 @DefineComponent.Builder
-interface PortalComponentBuilder {
-    fun portal(@BindsInstance portal: PortalRecord): PortalComponentBuilder
-    fun build(): PortalComponent
-}
+interface PortalComponentBuilder { fun portal(@BindsInstance portal: PortalRecord): PortalComponentBuilder; fun build(): PortalComponent }
 
 /** Entry points: how non-Hilt code (SessionManager, workers) reaches into a built component. */
 @EntryPoint @InstallIn(AccountComponent::class)
@@ -726,11 +594,7 @@ object AccountModule {
             .authenticator(TokenAuthenticator(tm))
             .build()
 
-    @Provides @AccountScoped
-    fun retrofit(@AccountHttp client: OkHttpClient, s: AccountSession, json: Json): Retrofit =
-        Retrofit.Builder().baseUrl(s.account.baseUrl).client(client)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
+    // retrofit(@AccountHttp client, s, json): Retrofit with baseUrl(s.account.baseUrl) — base URL per account
 }
 
 @Module @InstallIn(PortalComponent::class)
@@ -740,10 +604,7 @@ object PortalModule {
         client.newBuilder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder().header("X-Portal-Id", p.portal.id).build())
         }.build()
-
-    @Provides @PortalScoped
-    fun api(@PortalHttp client: OkHttpClient, retrofit: Retrofit): PortalApi =
-        retrofit.newBuilder().client(client).build().create(PortalApi::class.java)
+    // api(@PortalHttp client, retrofit): retrofit.newBuilder().client(client).build().create(PortalApi::class.java)
 }
 
 @Qualifier annotation class BaseHttp
@@ -803,29 +664,12 @@ class TokenManager(
         data object Transient : RefreshResult
     }
 
-    private suspend fun callRefresh(refreshToken: String): RefreshResult = withContext(Dispatchers.IO) {
-        val req = Request.Builder()
-            .url("${account.baseUrl}oauth/token")
-            .post(FormBody.Builder().add("grant_type", "refresh_token").add("refresh_token", refreshToken).build())
-            .build()
-        try {
-            authClient.newCall(req).execute().use { resp ->
-                when {
-                    resp.isSuccessful -> {
-                        val body = json.decodeFromString(TokenResponse.serializer(), resp.body!!.string())
-                        RefreshResult.Ok(TokenSet(body.access_token,
-                            System.currentTimeMillis() + body.expires_in * 1000,
-                            body.refresh_token ?: refreshToken))
-                    }
-                    resp.code == 400 || resp.code == 401 -> RefreshResult.InvalidGrant
-                    else -> RefreshResult.Transient
-                }
-            }
-        } catch (e: IOException) { RefreshResult.Transient }
-    }
+    // callRefresh: POST {baseUrl}oauth/token grant_type=refresh_token on authClient (Dispatchers.IO).
+    // 2xx → Ok(TokenSet(access, now + expires_in*1000, refresh_token ?: old)); 400/401 → InvalidGrant;
+    // other codes / IOException → Transient.
+    private suspend fun callRefresh(refreshToken: String): RefreshResult = TODO()
 }
 
-@Serializable data class TokenResponse(val access_token: String, val expires_in: Long, val refresh_token: String? = null)
 
 class AuthInterceptor(private val tm: TokenManager) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
@@ -877,13 +721,8 @@ class SessionManager @Inject constructor(
     fun accountEntry(): AccountEntryPoint? = account?.let { EntryPoints.get(it, AccountEntryPoint::class.java) }
     fun portalEntry(): PortalEntryPoint? = portal?.let { EntryPoints.get(it, PortalEntryPoint::class.java) }
 
-    suspend fun restore() = mutex.withLock {
-        cleaner.finishPendingRemovals()
-        val s = registry.snapshot()
-        val target = s.accounts.firstOrNull { it.id == s.activeAccountId } ?: s.accounts.maxByOrNull { it.lastUsedAt }
-        if (target == null) _state.value = SessionState.NoAccounts else activateLocked(target.id, null)
-    }
-
+    /** Cold start: finish pending removals, then activate activeAccountId ?? most recently used, else NoAccounts. */
+    suspend fun restore(): Unit = TODO()
     suspend fun switchAccount(accountId: String, portalId: String? = null) = mutex.withLock {
         if ((state.value as? SessionState.Active)?.account?.id == accountId) {
             if (portalId != null) switchPortalLocked(portalId); return@withLock
@@ -943,21 +782,10 @@ class SessionManager @Inject constructor(
         account = null
     }
 
-    /** Portal revoked (403 membership, push, or list refresh). */
-    suspend fun onPortalRevoked(accountId: String, portalId: String) = mutex.withLock {
-        val entry = accountEntry()
-        cleaner.purgePortal(accountId, portalId)
-        if (entry?.session()?.id == accountId) {
-            entry.portalRepository().remove(portalId)
-            val active = state.value as? SessionState.Active
-            if (active?.portal?.id == portalId) {
-                val next = entry.portalRepository().cachedOrFetch().maxByOrNull { it.lastUsedAt }
-                portalEntry()?.session()?.close(); portal = null
-                if (next == null) _state.value = SessionState.NoPortal(active.account)
-                else buildPortalLocked(entry, active.account, next)
-            }
-        }
-    }
+    /** Portal revoked (403 membership, push, or list refresh): cleaner.purgePortal, remove from portalRepository;
+     *  if it was the active portal → close it and build the most recently used remaining, else NoPortal. */
+    suspend fun onPortalRevoked(accountId: String, portalId: String): Unit = TODO()
+
 
     suspend fun signOut(accountId: String) = mutex.withLock {
         registry.setState(accountId, AccountState.Removing)
@@ -971,9 +799,7 @@ class SessionManager @Inject constructor(
         }
     }
 
-    suspend fun signOutAll() {
-        registry.snapshot().accounts.forEach { signOut(it.id) }
-    }
+    // signOutAll(): signOut(it.id) for every account in the registry snapshot.
 }
 ```
 
@@ -986,14 +812,8 @@ class SessionHolder @Inject constructor(private val sm: SessionManager) {
     fun portal(): PortalEntryPoint = sm.portalEntry() ?: error("No active portal session")
 }
 
-@HiltViewModel
-class ItemsViewModel @Inject constructor(holder: SessionHolder) : ViewModel() {
-    private val portal = holder.portal()                       // captured once; VM dies on switch
-    private val repo = portal.itemRepository()
-    val items = repo.items().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val canEdit = portal.session().role.map { it == Role.Owner || it == Role.Admin }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-}
+// @HiltViewModel ItemsViewModel(holder: SessionHolder): capture holder.portal() once (VM dies on switch),
+// read portal.itemRepository().items() and portal.session().role for permission gates.
 
 @Composable
 fun AppRoot(sessionManager: SessionManager) {
@@ -1039,67 +859,25 @@ class AccountDataCleaner @Inject constructor(
         registry.remove(accountId)                // last: registry entry gone = cleanup complete
     }
 
-    suspend fun purgePortal(accountId: String, portalId: String) = withContext(Dispatchers.IO) {
-        File(ctx.filesDir, "accounts/${accountId.fileKey}/portals/${portalId.fileKey}").deleteRecursively()
-        WorkManager.getInstance(ctx).cancelAllWorkByTag("portal:$portalId")
-        // Rows: done by the account DB if open, otherwise by a short-lived DB instance / worker.
-    }
-
-    suspend fun finishPendingRemovals() =
-        registry.snapshot().accounts.filter { it.state == AccountState.Removing }.forEach { remove(it.id) }
+    // purgePortal(accountId, portalId): delete files/accounts/<a>/portals/<p>, cancel work tagged "portal:<id>";
+    //   rows via the open account DB or a short-lived instance.
+    // finishPendingRemovals(): remove() every account still in state Removing (resumable cleanup).
 }
 ```
 
 ### A.9 Push routing (FCM)
 
 ```kotlin
-class AppMessagingService : FirebaseMessagingService() {
-    @Inject lateinit var registry: AccountRegistry
-    @Inject lateinit var pushRegistrar: PushRegistrar
-    @Inject lateinit var notifier: AccountNotifier
+// AppMessagingService (FirebaseMessagingService):
+// onNewToken(token) → pushRegistrar.enqueueRegisterAll(token)  (WorkManager: one job per account with its own auth)
+// onMessageReceived(msg): accountId = msg.data["accountId"] ?: return; unknown or Removing account →
+//   enqueueUnregister(accountId); type "portal_removed" → enqueuePortalRevoked(accountId, portalId);
+//   else notifier.show(account, portalId, msg.data). Never route by "currently active".
 
-    override fun onNewToken(token: String) {
-        pushRegistrar.enqueueRegisterAll(token)  // WorkManager: one job per account with its own auth
-    }
-
-    override fun onMessageReceived(msg: RemoteMessage) {
-        val accountId = msg.data["accountId"] ?: return
-        val portalId = msg.data["portalId"]
-        val account = runBlocking { registry.snapshot() }.accounts.firstOrNull { it.id == accountId }
-        if (account == null || account.state == AccountState.Removing) {
-            pushRegistrar.enqueueUnregister(accountId); return
-        }
-        if (msg.data["type"] == "portal_removed" && portalId != null) {
-            pushRegistrar.enqueuePortalRevoked(accountId, portalId); return
-        }
-        notifier.show(account, portalId, msg.data)
-    }
-}
-
-class AccountNotifier @Inject constructor(@ApplicationContext private val ctx: Context) {
-    fun show(account: AccountRecord, portalId: String?, data: Map<String, String>) {
-        val route = data["route"] ?: "home"
-        val intent = Intent(ctx, MainActivity::class.java).apply {
-            action = "open_${account.id}_${portalId}_$route"          // unique → extras not merged
-            putExtra(EXTRA_ACCOUNT, account.id); putExtra(EXTRA_PORTAL, portalId); putExtra(EXTRA_ROUTE, route)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val notifId = (data["id"] ?: route).hashCode()
-        val pi = PendingIntent.getActivity(ctx, notifId, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val n = NotificationCompat.Builder(ctx, "acct_${account.id.fileKey}_messages")
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(data["title"]).setContentText(data["body"])
-            .setSubText(account.email)                                    // which account
-            .setGroup("acct:${account.id}")
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setContentIntent(pi).setAutoCancel(true).build()
-        if (ActivityCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED ||
-            Build.VERSION.SDK_INT < 33) {
-            NotificationManagerCompat.from(ctx).notify("acct:${account.id}", notifId, n)
-        }
-    }
-}
+// AccountNotifier.show(account, portalId, data): PendingIntent to MainActivity with EXTRA_ACCOUNT/PORTAL/ROUTE,
+// unique action + request code per notification (extras never merged), FLAG_IMMUTABLE; channel
+// "acct_<fileKey>_messages", setSubText(account.email), setGroup("acct:<id>"), VISIBILITY_PRIVATE,
+// notify with tag "acct:<id>" only if POST_NOTIFICATIONS granted (API 33+).
 ```
 
 ### A.10 Push tap / deep link → account + portal
@@ -1112,83 +890,22 @@ sealed interface OpenTarget {
     data class NoAccess(val portalId: String) : OpenTarget
 }
 
-class EntryResolver @Inject constructor(private val registry: AccountRegistry, private val sm: SessionManager) {
-    suspend fun resolve(accountId: String?, portalId: String?, route: String): OpenTarget {
-        val snap = registry.snapshot()
-        val active = sm.state.value as? SessionState.Active
-        val candidates = when {
-            accountId != null -> snap.accounts.filter { it.id == accountId }
-            portalId != null -> snap.accounts.filter { a -> snap.portals[a.id].orEmpty().any { it.id == portalId } }
-            else -> listOfNotNull(active?.account)
-        }
-        return when {
-            candidates.isEmpty() -> OpenTarget.NoAccess(portalId.orEmpty())
-            active != null && candidates.any { it.id == active.account.id } &&
-                (portalId == null || portalId == active.portal.id) -> OpenTarget.Direct(route)
-            candidates.size == 1 -> OpenTarget.NeedsSwitch(candidates.single(), portalId, route)
-            else -> OpenTarget.ChooseAccount(candidates, portalId!!, route)
-        }
-    }
-}
+// EntryResolver.resolve(accountId?, portalId?, route): candidates = account by id, else accounts whose cached
+// portals contain portalId, else the active account. None → NoAccess; active pair matches → Direct;
+// one candidate → NeedsSwitch; several → ChooseAccount.
 
-// In MainActivity / a root ViewModel:
-suspend fun handleOpen(target: OpenTarget, confirm: suspend (String) -> Boolean, navigate: (String) -> Unit) {
-    when (target) {
-        is OpenTarget.Direct -> navigate(target.route)
-        is OpenTarget.NeedsSwitch -> {
-            val active = sm.state.value as? SessionState.Active
-            val sameAccount = active?.account?.id == target.account.id
-            if (sameAccount || confirm("Open as ${target.account.email}?")) {
-                sm.switchAccount(target.account.id, target.portalId)     // handles portal-only switch too
-                sm.state.first { it is SessionState.Active || it is SessionState.NeedsReauth }
-                if (sm.state.value is SessionState.Active) navigate(target.route) else pendingRoute = target.route
-            }
-        }
-        is OpenTarget.ChooseAccount -> showAccountChooser(target)
-        is OpenTarget.NoAccess -> showNoAccess(target.portalId)
-    }
-}
+// handleOpen(target): Direct → navigate. NeedsSwitch → same account or user confirms "Open as <email>?" →
+// sm.switchAccount(id, portalId) (handles portal-only switch), await Active/NeedsReauth, then navigate or keep
+// pendingRoute. ChooseAccount → account chooser. NoAccess → access message / add account.
 ```
 
 ### A.11 Account-scoped worker
 
 ```kotlin
-@HiltWorker
-class PortalSyncWorker @AssistedInject constructor(
-    @Assisted ctx: Context, @Assisted params: WorkerParameters,
-    private val registry: AccountRegistry,
-    private val accountBuilder: Provider<AccountComponentBuilder>,
-    private val sm: SessionManager,
-) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork(): Result {
-        val accountId = inputData.getString("accountId") ?: return Result.failure()
-        val portalId = inputData.getString("portalId") ?: return Result.failure()
-        val account = registry.snapshot().accounts.firstOrNull { it.id == accountId } ?: return Result.failure()
-        if (account.state != AccountState.Active) return Result.failure()
-
-        // Reuse the live graph if this account is active; otherwise build a temporary one.
-        val live = sm.accountEntry()?.takeIf { it.session().id == accountId }
-        val comp = if (live == null) accountBuilder.get().account(account).build() else null
-        val entry = live ?: EntryPoints.get(comp!!, AccountEntryPoint::class.java)
-        return try {
-            entry.portalRepository().syncUnread(portalId)
-            Result.success()
-        } catch (e: IOException) { Result.retry() }
-        finally { if (comp != null) { entry.session().close(); entry.database().close() } }
-    }
-
-    companion object {
-        fun enqueue(wm: WorkManager, accountId: String, portalId: String) =
-            wm.enqueueUniqueWork(
-                "sync_${accountId.fileKey}_${portalId.fileKey}", ExistingWorkPolicy.KEEP,
-                OneTimeWorkRequestBuilder<PortalSyncWorker>()
-                    .setInputData(workDataOf("accountId" to accountId, "portalId" to portalId))
-                    .addTag("acct:$accountId").addTag("portal:$portalId")
-                    .setConstraints(Constraints(requiredNetworkType = NetworkType.CONNECTED))
-                    .build(),
-            )
-    }
-}
+// @HiltWorker PortalSyncWorker(registry, accountBuilder, sm): read accountId/portalId from inputData; missing
+// account or state != Active → Result.failure(). Reuse sm.accountEntry() if it is this account, else build a
+// temporary AccountComponent and close its session + DB in finally. IOException → Result.retry().
+// Enqueue: enqueueUniqueWork("sync_<acctKey>_<portalKey>", KEEP), tags "acct:<id>" / "portal:<id>", CONNECTED.
 ```
 
 > Opening a second `RoomDatabase` for the active account's file from the worker is avoided by reusing the live graph; if workers run in another process, enable `enableMultiInstanceInvalidation()`.
@@ -1196,54 +913,11 @@ class PortalSyncWorker @AssistedInject constructor(
 ### A.12 Identity sync (analytics, crash, RevenueCat)
 
 ```kotlin
-@Singleton
-class IdentitySync @Inject constructor() {
-    fun onAccount(a: AccountRecord) {
-        val opaque = a.id.fileKey                                  // no email / PII
-        Firebase.crashlytics.setUserId(opaque)
-        Firebase.analytics.setUserId(opaque)
-        Purchases.sharedInstance.logInWith(a.serverUserId, onError = { /* log, keep going */ })
-    }
-    fun onPortal(p: PortalRecord) {
-        Firebase.analytics.setUserProperty("portal_id", p.id.fileKey)
-        Firebase.analytics.setUserProperty("portal_role", p.role.name)
-        Firebase.crashlytics.setCustomKey("portal_role", p.role.name)
-    }
-    fun onSignedOutAll() {
-        Firebase.crashlytics.setUserId("")
-        Firebase.analytics.setUserId(null)
-        if (!Purchases.sharedInstance.isAnonymous) Purchases.sharedInstance.logOutWith()
-    }
-}
+// IdentitySync.onAccount(a): opaque id = a.id.fileKey (no PII) → Crashlytics/Analytics setUserId;
+//   Purchases.sharedInstance.logInWith(a.serverUserId). onPortal(p): portal_id (hashed) + portal_role properties.
+// onSignedOutAll(): clear user ids; Purchases logOutWith() only if not anonymous.
 ```
 
 ### A.13 Unit test: single-flight refresh
 
-```kotlin
-@Test fun concurrent401s_triggerSingleRefresh() = runTest {
-    val server = MockWebServer().apply {
-        dispatcher = object : Dispatcher() {
-            val refreshes = AtomicInteger()
-            override fun dispatch(r: RecordedRequest) = when (r.path) {
-                "/oauth/token" -> { refreshes.incrementAndGet()
-                    MockResponse().setBody("""{"access_token":"new","expires_in":3600,"refresh_token":"r2"}""") }
-                else -> if (r.getHeader("Authorization") == "Bearer new") MockResponse().setBody("{}")
-                        else MockResponse().setResponseCode(401)
-            }
-        }
-        start()
-    }
-    val account = testAccount(baseUrl = server.url("/").toString())
-    val store = FakeTokenStore(account.id, TokenSet("old", Long.MAX_VALUE, "r1"))
-    val tm = TokenManager(account, store, FakeRegistry(), OkHttpClient(), Json)
-    val client = OkHttpClient.Builder().addInterceptor(AuthInterceptor(tm)).authenticator(TokenAuthenticator(tm)).build()
-
-    (1..20).map { async(Dispatchers.IO) { client.newCall(Request.Builder().url(server.url("/items")).build()).execute().use { it.code } } }
-        .awaitAll().forEach { assertEquals(200, it) }
-
-    assertEquals(1, server.requestCount { it.path == "/oauth/token" })
-    assertEquals("r2", store.current?.refreshToken)
-}
-```
-
-(`FakeTokenStore`, `FakeRegistry` and `requestCount` are small test helpers; extract an interface from `SecureTokenStore`/`AccountRegistry` so `TokenManager` can take fakes.)
+Sketch: `MockWebServer` answers `/oauth/token` with a rotated token and 401s any other request not carrying it; fire 20 concurrent calls through a client with `AuthInterceptor` + `TokenAuthenticator` over one `TokenManager` (fake store/registry); assert all 200, exactly one `/oauth/token` request, and the stored refresh token is the rotated one.

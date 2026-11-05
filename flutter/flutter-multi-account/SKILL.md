@@ -329,18 +329,11 @@ Test tips:
 
 ## Appendix — Reference implementation (Dart 3, Flutter 3.24+, Riverpod 2.6/3.x, dio 5, Drift 2)
 
-Simplified but complete enough to adapt. Error handling and logging trimmed; names are illustrative. Verify package APIs against your versions.
+Simplified but complete enough to adapt. Error handling, logging, JSON (de)serialization and `copyWith` boilerplate trimmed; names are illustrative. Verify package APIs against your versions.
 
 ### A.1 Model and registry
 
 ```dart
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:crypto/crypto.dart';
-import 'package:path_provider/path_provider.dart';
-
 /// "$environment:$userId" — stable, never the email.
 extension type const AccountKey(String value) {
   /// Safe folder / cache name.
@@ -351,47 +344,16 @@ enum PortalRole { owner, admin, member, guest }
 
 final class PortalRef {
   const PortalRef({required this.id, required this.name, required this.role, this.lastUsedAt});
-  final String id;
-  final String name;
+  final String id, name;
   final PortalRole role;
   final DateTime? lastUsedAt;
-
-  PortalRef copyWith({DateTime? lastUsedAt, PortalRole? role, String? name}) => PortalRef(
-      id: id, name: name ?? this.name, role: role ?? this.role, lastUsedAt: lastUsedAt ?? this.lastUsedAt);
-
-  Map<String, Object?> toJson() =>
-      {'id': id, 'name': name, 'role': role.name, 'lastUsedAt': lastUsedAt?.toIso8601String()};
-  factory PortalRef.fromJson(Map<String, Object?> j) => PortalRef(
-        id: j['id']! as String,
-        name: j['name']! as String,
-        role: PortalRole.values.byName(j['role']! as String),
-        lastUsedAt: j['lastUsedAt'] == null ? null : DateTime.parse(j['lastUsedAt']! as String),
-      );
+  // copyWith / toJson / fromJson omitted.
 }
 
 final class Account {
-  const Account({
-    required this.key,
-    required this.userId,
-    required this.environment,
-    required this.baseUrl,
-    required this.email,
-    required this.displayName,
-    this.avatarUrl,
-    this.portals = const [],
-    this.lastPortalId,
-    this.lastLocation,
-    this.needsReauth = false,
-    this.pendingDeletion = false,
-    required this.lastActiveAt,
-  });
-
-  final AccountKey key;
-  final String userId, environment, baseUrl, email, displayName;
-  final String? avatarUrl, lastPortalId, lastLocation;
-  final List<PortalRef> portals;
-  final bool needsReauth, pendingDeletion;
-  final DateTime lastActiveAt;
+  // Fields: key, userId, environment, baseUrl, email, displayName, avatarUrl,
+  // portals, lastPortalId, lastLocation, needsReauth, pendingDeletion, lastActiveAt.
+  // Constructor, copyWith, toJson / fromJson omitted.
 
   PortalRef? portal(String? id) => portals.where((p) => p.id == id).firstOrNull;
 
@@ -403,67 +365,20 @@ final class Account {
       ..sort((a, b) => (b.lastUsedAt ?? DateTime(0)).compareTo(a.lastUsedAt ?? DateTime(0)));
     return sorted.firstOrNull;
   }
-
-  Account copyWith({
-    List<PortalRef>? portals,
-    String? lastPortalId,
-    String? lastLocation,
-    bool? needsReauth,
-    bool? pendingDeletion,
-    DateTime? lastActiveAt,
-  }) =>
-      Account(
-        key: key, userId: userId, environment: environment, baseUrl: baseUrl,
-        email: email, displayName: displayName, avatarUrl: avatarUrl,
-        portals: portals ?? this.portals,
-        lastPortalId: lastPortalId ?? this.lastPortalId,
-        lastLocation: lastLocation ?? this.lastLocation,
-        needsReauth: needsReauth ?? this.needsReauth,
-        pendingDeletion: pendingDeletion ?? this.pendingDeletion,
-        lastActiveAt: lastActiveAt ?? this.lastActiveAt,
-      );
-
-  Map<String, Object?> toJson() => {
-        'key': key.value, 'userId': userId, 'environment': environment, 'baseUrl': baseUrl,
-        'email': email, 'displayName': displayName, 'avatarUrl': avatarUrl,
-        'portals': portals.map((p) => p.toJson()).toList(),
-        'lastPortalId': lastPortalId, 'lastLocation': lastLocation,
-        'needsReauth': needsReauth, 'pendingDeletion': pendingDeletion,
-        'lastActiveAt': lastActiveAt.toIso8601String(),
-      };
-
-  factory Account.fromJson(Map<String, Object?> j) => Account(
-        key: AccountKey(j['key']! as String),
-        userId: j['userId']! as String,
-        environment: j['environment']! as String,
-        baseUrl: j['baseUrl']! as String,
-        email: j['email']! as String,
-        displayName: j['displayName']! as String,
-        avatarUrl: j['avatarUrl'] as String?,
-        portals: [for (final p in j['portals']! as List) PortalRef.fromJson((p as Map).cast())],
-        lastPortalId: j['lastPortalId'] as String?,
-        lastLocation: j['lastLocation'] as String?,
-        needsReauth: j['needsReauth'] as bool? ?? false,
-        pendingDeletion: j['pendingDeletion'] as bool? ?? false,
-        lastActiveAt: DateTime.parse(j['lastActiveAt']! as String),
-      );
 }
 
 typedef ActivePair = ({AccountKey account, String? portalId});
 
 class TooManyAccounts implements Exception {}
 
-/// Single writer for non-secret account metadata. Process-global.
+/// Single writer for non-secret account metadata (account_registry.json in
+/// app support dir, versioned with migrations). Process-global.
 class AccountRegistry {
-  AccountRegistry._(this._file, this._accounts, this._active, this.installId);
-
-  static const schemaVersion = 2;
   static const maxAccounts = 5;
 
   final File _file;
   final List<Account> _accounts; // ordered
   ActivePair? _active;
-  final String installId;
   final _changes = StreamController<void>.broadcast();
   Future<void> _writeChain = Future.value();
 
@@ -473,108 +388,28 @@ class AccountRegistry {
   Account? byKey(AccountKey k) => _accounts.where((a) => a.key == k).firstOrNull;
   bool get isFreshInstall => _accounts.isEmpty && _active == null;
 
-  static Future<AccountRegistry> load() async {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}/account_registry.json');
-    if (!await file.exists()) {
-      return AccountRegistry._(file, [], null, DateTime.now().microsecondsSinceEpoch.toString());
-    }
-    final j = jsonDecode(await file.readAsString()) as Map<String, Object?>;
-    // Migrations keyed on j['v'] go here (e.g. v1 single-account → v2).
-    final accounts = [for (final a in j['accounts']! as List) Account.fromJson((a as Map).cast())];
-    final act = j['active'] as Map?;
-    return AccountRegistry._(
-      file,
-      accounts,
-      act == null ? null : (account: AccountKey(act['account'] as String), portalId: act['portal'] as String?),
-      j['installId']! as String,
-    );
-  }
+  // static Future<AccountRegistry> load() — read JSON, run migrations keyed on 'v'.
 
-  Future<void> _persist() {
-    final payload = jsonEncode({
-      'v': schemaVersion,
-      'installId': installId,
-      'accounts': _accounts.map((a) => a.toJson()).toList(),
-      'active': _active == null ? null : {'account': _active!.account.value, 'portal': _active!.portalId},
-    });
-    // Serialize writes; write-then-rename for atomicity.
-    return _writeChain = _writeChain.then((_) async {
-      final tmp = File('${_file.path}.tmp');
-      await tmp.writeAsString(payload, flush: true);
-      await tmp.rename(_file.path);
-      _changes.add(null);
-    });
-  }
+  // _persist(): serialized write chain, write-then-rename for atomicity, then _changes.add.
+  // upsert(a) throws TooManyAccounts past maxAccounts.
 
-  Future<void> upsert(Account a) {
-    final i = _accounts.indexWhere((x) => x.key == a.key);
-    if (i >= 0) {
-      _accounts[i] = a;
-    } else {
-      if (accounts.length >= maxAccounts) throw TooManyAccounts();
-      _accounts.add(a);
-    }
-    return _persist();
-  }
+  // update(key, fn), remove(key) follow the same pattern; setActive(pair) also
+  // stamps lastActiveAt / lastPortalId / portal.lastUsedAt.
 
-  Future<void> update(AccountKey k, Account Function(Account) f) {
-    final i = _accounts.indexWhere((x) => x.key == k);
-    if (i < 0) return Future.value();
-    _accounts[i] = f(_accounts[i]);
-    return _persist();
-  }
-
-  Future<void> setActive(ActivePair? pair) {
-    _active = pair;
-    if (pair != null) {
-      update(pair.account, (a) => a.copyWith(
-            lastActiveAt: DateTime.now(),
-            lastPortalId: pair.portalId,
-            portals: [
-              for (final p in a.portals) p.id == pair.portalId ? p.copyWith(lastUsedAt: DateTime.now()) : p
-            ],
-          ));
-    }
-    return _persist();
-  }
-
-  Future<void> remove(AccountKey k) {
-    _accounts.removeWhere((a) => a.key == k);
-    if (_active?.account == k) _active = null;
-    return _persist();
-  }
-
-  /// Most recently used remaining account that can be opened without re-auth.
-  Account? nextActiveCandidate({AccountKey? excluding}) {
-    final c = accounts.where((a) => a.key != excluding && !a.needsReauth).toList()
-      ..sort((a, b) => b.lastActiveAt.compareTo(a.lastActiveAt));
-    return c.firstOrNull;
-  }
+  // nextActiveCandidate({excluding}): most recently active remaining account without needsReauth.
 }
 ```
 
 ### A.2 Secure token store
 
 ```dart
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
 final class Tokens {
   const Tokens({required this.access, required this.refresh, required this.expiresAt, this.portalTokens = const {}});
   final String access, refresh;
   final DateTime expiresAt;
   final Map<String, String> portalTokens; // portalId → token, if the backend uses token exchange
-
   bool expiresWithin(Duration d) => DateTime.now().add(d).isAfter(expiresAt);
-
-  Map<String, Object?> toJson() =>
-      {'a': access, 'r': refresh, 'e': expiresAt.toIso8601String(), 'p': portalTokens};
-  factory Tokens.fromJson(Map<String, Object?> j) => Tokens(
-        access: j['a']! as String,
-        refresh: j['r']! as String,
-        expiresAt: DateTime.parse(j['e']! as String),
-        portalTokens: ((j['p'] as Map?) ?? const {}).cast<String, String>(),
-      );
+  // toJson / fromJson omitted.
 }
 
 abstract interface class TokenStore {
@@ -602,55 +437,25 @@ class SecureTokenStore implements TokenStore {
 
   /// Per-account serialization: refresh-write and sign-out-delete never interleave.
   Future<T> _locked<T>(AccountKey k, Future<T> Function() body) {
-    final prev = _locks[k] ?? Future.value();
-    final next = prev.then((_) => body());
+    final next = (_locks[k] ?? Future.value()).then((_) => body());
     _locks[k] = next.then((_) {}, onError: (_) {});
     return next;
   }
 
-  @override
-  Future<Tokens?> read(AccountKey k) => _locked(k, () async {
-        try {
-          final raw = await _s.read(key: '$_prefix${k.value}');
-          return raw == null ? null : Tokens.fromJson(jsonDecode(raw) as Map<String, Object?>);
-        } on Exception {
-          // Typical after Android backup restore: ciphertext without the Keystore key.
-          await _s.delete(key: '$_prefix${k.value}');
-          return null; // caller marks needsReauth
-        }
-      });
+  // read(k) under _locked: on decrypt failure (typical after Android backup restore —
+  // ciphertext without the Keystore key) delete the entry and return null → caller marks needsReauth.
 
-  @override
-  Future<void> write(AccountKey k, Tokens t) =>
-      _locked(k, () => _s.write(key: '$_prefix${k.value}', value: jsonEncode(t.toJson())));
-
-  @override
-  Future<void> delete(AccountKey k) => _locked(k, () => _s.delete(key: '$_prefix${k.value}'));
-
-  @override
-  Future<void> deleteAll() async {
-    for (final k in await keys()) {
-      await delete(k);
-    }
-  }
-
-  @override
-  Future<Set<AccountKey>> keys() async => {
-        for (final k in (await _s.readAll()).keys)
-          if (k.startsWith(_prefix)) AccountKey(k.substring(_prefix.length)),
-      };
+  // write / delete use _locked the same way; deleteAll loops keys();
+  // keys() = readAll() filtered by _prefix.
 }
 
 /// Run once at startup before opening any session.
 Future<void> reconcileOnLaunch(AccountRegistry reg, TokenStore store) async {
   // iOS Keychain survives uninstall: a fresh install must not resurrect sessions.
-  if (reg.isFreshInstall) {
-    await store.deleteAll();
-    return;
-  }
+  if (reg.isFreshInstall) return store.deleteAll();
   // Finish deletions interrupted by process death.
   for (final a in [...reg.accounts.where((a) => a.pendingDeletion)]) {
-    await wipeAccountFiles(a.key);
+    await wipeAccountFiles(a.key); // deletes <support>/accounts/<hash> and <tmp>/accounts/<hash>
     await store.delete(a.key);
     await reg.remove(a.key);
   }
@@ -660,26 +465,11 @@ Future<void> reconcileOnLaunch(AccountRegistry reg, TokenStore store) async {
     if (!known.contains(k)) await store.delete(k);
   }
 }
-
-Future<Directory> accountDir(AccountKey k) async {
-  final base = await getApplicationSupportDirectory();
-  return Directory('${base.path}/accounts/${k.hash}').create(recursive: true);
-}
-
-Future<void> wipeAccountFiles(AccountKey k) async {
-  final base = await getApplicationSupportDirectory();
-  final tmp = await getTemporaryDirectory();
-  for (final d in [Directory('${base.path}/accounts/${k.hash}'), Directory('${tmp.path}/accounts/${k.hash}')]) {
-    if (await d.exists()) await d.delete(recursive: true);
-  }
-}
 ```
 
 ### A.3 Token holder + dio interceptors (single-flight refresh per account)
 
 ```dart
-import 'package:dio/dio.dart';
-
 class AccountRevoked implements Exception {
   AccountRevoked(this.account);
   final AccountKey account;
@@ -697,7 +487,7 @@ class TokenHolder {
   Future<Tokens>? _inFlight;
 
   // Bare client: never passes through AuthInterceptor (no refresh loops).
-  late final Dio _bare = Dio(BaseOptions(baseUrl: baseUrl, connectTimeout: const Duration(seconds: 10)));
+  late final Dio _bare = Dio(BaseOptions(baseUrl: baseUrl));
 
   Future<Tokens?> current() async => _tokens ??= await store.read(account);
 
@@ -712,9 +502,9 @@ class TokenHolder {
     final t = await current();
     if (t == null) throw AccountRevoked(account);
     try {
-      final r = await _bare.post<Map<String, Object?>>('/oauth/token',
-          data: {'grant_type': 'refresh_token', 'refresh_token': t.refresh});
-      final d = r.data!;
+      final d = (await _bare.post<Map<String, Object?>>('/oauth/token',
+              data: {'grant_type': 'refresh_token', 'refresh_token': t.refresh}))
+          .data!;
       final next = Tokens(
         access: d['access_token']! as String,
         refresh: (d['refresh_token'] as String?) ?? t.refresh, // rotation-aware
@@ -724,9 +514,8 @@ class TokenHolder {
       await store.write(account, next); // persist BEFORE releasing waiters
       return _tokens = next;
     } on DioException catch (e) {
-      final code = e.response?.statusCode;
       final err = (e.response?.data is Map) ? (e.response!.data as Map)['error'] : null;
-      if (code == 401 || err == 'invalid_grant') {
+      if (e.response?.statusCode == 401 || err == 'invalid_grant') {
         _tokens = null;
         await store.delete(account);
         onRevoked(account); // marks needsReauth for THIS account only
@@ -743,18 +532,14 @@ class AuthInterceptor extends QueuedInterceptor {
   final TokenHolder _holder;
   final Dio _dio; // the same session dio, for retries
 
-  static const _skew = Duration(seconds: 45);
-
   @override
   Future<void> onRequest(RequestOptions o, RequestInterceptorHandler h) async {
     try {
       var t = await _holder.current();
-      if (t == null) return h.reject(DioException(requestOptions: o, error: AccountRevoked(_holder.account)));
-      if (t.expiresWithin(_skew)) t = await _holder.refresh(stale: t.access);
+      if (t == null) throw AccountRevoked(_holder.account);
+      if (t.expiresWithin(const Duration(seconds: 45))) t = await _holder.refresh(stale: t.access);
       o.headers['Authorization'] = 'Bearer ${t.access}';
       h.next(o);
-    } on AccountRevoked catch (e) {
-      h.reject(DioException(requestOptions: o, error: e));
     } catch (e) {
       h.reject(DioException(requestOptions: o, error: e));
     }
@@ -770,107 +555,30 @@ class AuthInterceptor extends QueuedInterceptor {
       o.extra['retried'] = true;
       o.headers['Authorization'] = 'Bearer ${t.access}';
       h.resolve(await _dio.fetch<dynamic>(o));
-    } on DioException catch (re) {
-      h.next(re);
     } catch (err) {
-      h.next(DioException(requestOptions: o, error: err));
+      h.next(err is DioException ? err : DioException(requestOptions: o, error: err));
     }
   }
 }
 
-class PortalRevoked implements Exception {
-  PortalRevoked(this.portalId);
-  final String portalId;
-}
-
-/// Adds the portal header captured at construction; maps membership 403s.
-class PortalInterceptor extends Interceptor {
-  PortalInterceptor(this.portalId, this.onPortalRevoked);
-  final String portalId;
-  final void Function(String portalId) onPortalRevoked;
-
-  @override
-  void onRequest(RequestOptions o, RequestInterceptorHandler h) {
-    o.headers['X-Portal-Id'] = portalId;
-    h.next(o);
-  }
-
-  @override
-  void onError(DioException e, ErrorInterceptorHandler h) {
-    final data = e.response?.data;
-    if (e.response?.statusCode == 403 && data is Map && data['code'] == 'portal_access_revoked') {
-      onPortalRevoked(portalId);
-      return h.next(DioException(requestOptions: e.requestOptions, response: e.response, error: PortalRevoked(portalId)));
-    }
-    h.next(e);
-  }
-}
+// PortalInterceptor(portalId, onPortalRevoked): onRequest sets 'X-Portal-Id' captured at
+// construction; onError maps 403 {code: 'portal_access_revoked'} → onPortalRevoked(portalId)
+// and a PortalRevoked error.
 ```
 
 ### A.4 Sessions (account + portal) with Drift DB per account
 
 ```dart
-import 'package:drift/drift.dart';
-import 'package:drift/native.dart';
-import 'package:flutter/painting.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+// Drift: AccountDatabase(File) per account at <accountDir>/main.sqlite. Every
+// portal-scoped table has a portalId column in its primary key.
 
-part 'account_db.g.dart';
-
-class Items extends Table {
-  TextColumn get id => text()();
-  TextColumn get portalId => text()(); // every portal-scoped table has it
-  TextColumn get title => text()();
-  @override
-  Set<Column> get primaryKey => {portalId, id};
-}
-
-@DriftDatabase(tables: [Items])
-class AccountDatabase extends _$AccountDatabase {
-  AccountDatabase(File file) : super(NativeDatabase.createInBackground(file));
-  AccountDatabase.forTesting(super.e);
-  @override
-  int get schemaVersion => 1;
-}
-
-/// Portal filter baked into the DAO: callers cannot forget it.
-class ItemsDao {
-  ItemsDao(this._db, this.portalId);
-  final AccountDatabase _db;
-  final String portalId;
-
-  Stream<List<Item>> watchAll() =>
-      (_db.select(_db.items)..where((t) => t.portalId.equals(portalId))).watch();
-
-  Future<void> upsertAll(List<ItemsCompanion> rows) => _db.batch((b) => b.insertAllOnConflictUpdate(
-      _db.items, [for (final r in rows) r.copyWith(portalId: Value(portalId))]));
-
-  Future<void> deletePortalData() => (_db.delete(_db.items)..where((t) => t.portalId.equals(portalId))).go();
-}
+/// ItemsDao(db, portalId): portal filter baked into every query (watchAll, deletePortalData)
+/// so callers cannot forget it.
 
 class AccountSession {
-  AccountSession._(this.account, this.tokens, this.dio, this.db, this.images, this._cancel);
-
-  final Account account;
-  final TokenHolder tokens;
-  final Dio dio; // account-level endpoints (profile, portal list) — no portal header
-  final AccountDatabase db;
-  final CacheManager images; // per-account authenticated image cache
-  final CancelToken _cancel;
-  bool _disposed = false;
-  bool get isDisposed => _disposed;
-  CancelToken get cancelToken => _cancel;
-
-  static Future<AccountSession> open(Account a, TokenStore store, {required void Function(AccountKey) onRevoked}) async {
-    final dir = await accountDir(a.key);
-    final holder = TokenHolder(account: a.key, store: store, baseUrl: a.baseUrl, onRevoked: onRevoked);
-    if (await holder.current() == null) throw AccountRevoked(a.key);
-    final dio = Dio(BaseOptions(baseUrl: a.baseUrl));
-    dio.interceptors.add(AuthInterceptor(holder, dio));
-    final db = AccountDatabase(File('${dir.path}/main.sqlite'));
-    final images = CacheManager(Config('img_${a.key.hash}', stalePeriod: const Duration(days: 14)));
-    return AccountSession._(a, holder, dio, db, images, CancelToken());
-  }
+  // Fields: account, tokens (TokenHolder), dio (account-level endpoints, no portal header),
+  // db (AccountDatabase), images (CacheManager('img_${key.hash}')), cancelToken, isDisposed.
+  // static open(account, store, onRevoked): throws AccountRevoked if no tokens.
 
   /// A dio for one portal: shares the account's token holder (single-flight stays per account).
   Dio portalDio(String portalId, void Function(String) onPortalRevoked) {
@@ -881,112 +589,46 @@ class AccountSession {
     return d;
   }
 
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    _cancel.cancel('account session disposed');
-    dio.close(force: true);
-    await db.close();
-    PaintingBinding.instance.imageCache
-      ..clear()
-      ..clearLiveImages();
-  }
+  // dispose(): idempotent — cancel CancelToken, dio.close(force: true), db.close(),
+  // clear PaintingBinding.instance.imageCache (+ live images).
 }
 
-class PortalSession {
-  PortalSession(this.account, this.portal, void Function(String) onRevoked)
-      : dio = account.portalDio(portal.id, onRevoked),
-        items = ItemsDao(account.db, portal.id);
-
-  final AccountSession account;
-  final PortalRef portal;
-  final Dio dio;
-  final ItemsDao items;
-  final cancelToken = CancelToken();
-  bool _disposed = false;
-  bool get isDisposed => _disposed;
-  String get key => '${account.account.key.value}/${portal.id}';
-
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    cancelToken.cancel('portal session disposed');
-    dio.close(force: true);
-    // DB stays open: it belongs to the account session.
-  }
-}
+// PortalSession(account, portal, onRevoked): dio = account.portalDio(...), items = ItemsDao(db, portal.id),
+// key = '<accountKey>/<portalId>'. dispose() cancels its CancelToken and closes its dio;
+// the DB stays open — it belongs to the account session.
 ```
 
 ### A.5 Riverpod wiring: container per account, child container per portal
 
 ```dart
-import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
-
 // App-global (root container).
 final registryProvider = Provider<AccountRegistry>((_) => throw UnimplementedError());
-final tokenStoreProvider = Provider<TokenStore>((_) => throw UnimplementedError());
 
 // Session-scoped: ONLY ever provided via overrides in a session container.
 final accountSessionProvider = Provider<AccountSession>((_) => throw StateError('no account session'));
 final portalSessionProvider = Provider<PortalSession>((_) => throw StateError('no portal session'));
 
-// Example portal-scoped data provider. It lives in the portal container and dies with it.
+// Portal-scoped data lives in the portal container and dies with it.
 final itemsProvider = StreamProvider.autoDispose<List<Item>>((ref) {
   return ref.watch(portalSessionProvider).items.watchAll();
 });
-
-final portalListProvider = FutureProvider<List<PortalRef>>((ref) async {
-  final s = ref.watch(accountSessionProvider);
-  final r = await s.dio.get<List<dynamic>>('/me/portals', cancelToken: s.cancelToken);
-  return [for (final p in r.data!) PortalRef.fromJson((p as Map).cast())];
-});
 ```
 
-Session-scoped providers that need to resolve inside a child container must be registered there via overrides (both `accountSessionProvider` and anything depending on it that should be per container). In Riverpod 2.x, a provider not overridden in a child resolves in the **root** where its dependencies throw — declare `dependencies: [portalSessionProvider]` on scoped providers (required for `riverpod_lint` and for correct scoping), or simply override them per container as below. Verify the scoping rules for your Riverpod major version.
+In Riverpod 2.x a provider not overridden in a child container resolves in the **root**, where its dependencies throw — declare `dependencies: [portalSessionProvider]` on scoped providers or override them per container (as in A.6). Verify the scoping rules for your Riverpod major version.
 
 ### A.6 SessionManager: serialized switch-account / switch-portal / add / sign out
 
 ```dart
-sealed class SessionState {
-  const SessionState();
-}
-final class SignedOut extends SessionState {
-  const SignedOut();
-}
-final class Switching extends SessionState {
-  const Switching(this.target);
-  final Account target;
-}
-final class NoPortal extends SessionState {
-  const NoPortal(this.account, this.container);
-  final AccountSession account;
-  final ProviderContainer container;
-}
-final class Ready extends SessionState {
-  const Ready(this.account, this.portal, this.accountContainer, this.portalContainer, this.router);
-  final AccountSession account;
-  final PortalSession portal;
-  final ProviderContainer accountContainer, portalContainer;
-  final GoRouter router;
-}
+// States: SignedOut | Switching(target) | NoPortal(account, container)
+//       | Ready(account, portal, accountContainer, portalContainer, router)
 
 class SessionManager extends ChangeNotifier {
-  SessionManager(this.root, this.registry, this.store, {required this.routerFactory, required this.hooks});
-
-  final ProviderContainer root;
-  final AccountRegistry registry;
-  final TokenStore store;
-  final GoRouter Function(PortalSession s, String initialLocation) routerFactory;
-  final SessionHooks hooks; // analytics / IAP / push side effects
-
-  SessionState _state = const SignedOut();
-  SessionState get state => _state;
-  void _set(SessionState s) {
-    _state = s;
-    notifyListeners();
-  }
+  // Fields: root container, registry, store, routerFactory(PortalSession, initialLocation),
+  // hooks (SessionHooks: analytics / IAP / push / reauth UI), _state + _set(s) → notifyListeners.
+  AccountSession? _account;
+  ProviderContainer? _accountContainer;
+  PortalSession? _portal;
+  ProviderContainer? _portalContainer;
 
   // ---- Serialization: every mutation runs strictly one after another. ----
   Future<void> _queue = Future.value();
@@ -996,26 +638,14 @@ class SessionManager extends ChangeNotifier {
     return run;
   }
 
-  AccountSession? _account;
-  ProviderContainer? _accountContainer;
-  PortalSession? _portal;
-  ProviderContainer? _portalContainer;
-
-  Future<void> restore() => _serial(() async {
-        await reconcileOnLaunch(registry, store);
-        final a = registry.active == null ? null : registry.byKey(registry.active!.account);
-        final target = (a != null && !a.needsReauth) ? a : registry.nextActiveCandidate();
-        if (target == null) return _set(const SignedOut());
-        await _openAccount(target, portalId: registry.active?.portalId, location: target.lastLocation);
-      });
+  // restore(): reconcileOnLaunch, then open registry.active (or nextActiveCandidate) or SignedOut.
 
   Future<void> switchAccount(AccountKey key, {String? portalId, String? location}) => _serial(() async {
         if (_account?.account.key == key) {
           if (portalId != null && portalId != _portal?.portal.id) await _openPortal(portalId, location: location);
           return;
         }
-        final target = registry.byKey(key);
-        if (target == null) throw StateError('unknown account');
+        final target = registry.byKey(key) ?? (throw StateError('unknown account'));
         _set(Switching(target)); // UI shows switching overlay; old screens not interactive
         await _saveLocation();
         await _teardownAccount();
@@ -1024,27 +654,9 @@ class SessionManager extends ChangeNotifier {
 
   Future<void> switchPortal(String portalId, {String? location}) => _serial(() => _openPortal(portalId, location: location));
 
-  /// Called after a successful login flow that ran ABOVE the current session.
-  Future<void> addAccount(Account a, Tokens t) => _serial(() async {
-        final existing = registry.byKey(a.key);
-        await store.write(a.key, t);
-        await registry.upsert(existing == null ? a : existing.copyWith(needsReauth: false));
-        await _saveLocation();
-        await _teardownAccount();
-        await _openAccount(registry.byKey(a.key)!);
-      });
-
-  Future<void> signOut(AccountKey key) => _serial(() => _signOutOne(key));
-
-  Future<void> signOutAll() => _serial(() async {
-        for (final a in [...registry.accounts]) {
-          await _signOutOne(a.key, pickNext: false);
-        }
-        await store.deleteAll();
-        _set(const SignedOut());
-      });
-
-  // ---- internals ----
+  // addAccount(a, tokens): after a login flow that ran ABOVE the current session —
+  // store.write, registry.upsert (clears needsReauth if existing), save location, teardown, _openAccount.
+  // signOutAll(): _signOutOne(pickNext: false) for each, store.deleteAll(), SignedOut.
 
   Future<void> _openAccount(Account a, {String? portalId, String? location}) async {
     final AccountSession s;
@@ -1055,14 +667,10 @@ class SessionManager extends ChangeNotifier {
       return _set(const SignedOut()); // UI offers re-auth for `a` or another account
     }
     _account = s;
-    _accountContainer = ProviderContainer(
-      parent: root,
-      overrides: [accountSessionProvider.overrideWithValue(s), portalListProvider],
-    );
+    _accountContainer = ProviderContainer(parent: root, overrides: [accountSessionProvider.overrideWithValue(s)]);
     await hooks.onAccountActivated(s.account); // analytics id, RevenueCat logIn, etc.
-
-    // Refresh portals in the background; use cached list for instant start.
-    unawaited(_refreshPortals(s));
+    unawaited(_refreshPortals(s)); // cached list for instant start; drop result if s.isDisposed;
+                                   // current portal missing from fresh list → _onPortalRevoked
     final portal = a.portal(portalId) ?? a.defaultPortal;
     if (portal == null) {
       await registry.setActive((account: a.key, portalId: null));
@@ -1073,79 +681,30 @@ class SessionManager extends ChangeNotifier {
 
   Future<void> _openPortal(String portalId, {String? location}) async {
     final acc = _account!;
-    final ref = registry.byKey(acc.account.key)!.portal(portalId);
-    if (ref == null) throw StateError('portal not in account');
+    final ref = registry.byKey(acc.account.key)!.portal(portalId) ?? (throw StateError('portal not in account'));
     await _teardownPortal();
-    final p = PortalSession(acc, ref, _onPortalRevoked);
-    _portal = p;
+    final p = _portal = PortalSession(acc, ref, _onPortalRevoked);
     _portalContainer = ProviderContainer(
       parent: _accountContainer,
       overrides: [portalSessionProvider.overrideWithValue(p), itemsProvider],
     );
     await registry.setActive((account: acc.account.key, portalId: portalId)); // persist before UI
     await hooks.onPortalActivated(acc.account, ref);
-    final router = routerFactory(p, _safeLocation(location) ?? '/home');
-    _set(Ready(acc, p, _accountContainer!, _portalContainer!, router));
+    _set(Ready(acc, p, _accountContainer!, _portalContainer!, routerFactory(p, _safeLocation(location) ?? '/home')));
   }
 
-  Future<void> _teardownPortal() async {
-    final c = _portalContainer, p = _portal;
-    _portalContainer = null;
-    _portal = null;
-    if (_state case Ready(:final router)) router.dispose();
-    c?.dispose(); // runs ref.onDispose for portal providers
-    await p?.dispose();
-  }
+  // _teardownPortal(): null out fields, dispose the Ready router, the portal container
+  // (runs ref.onDispose for portal providers), then the PortalSession.
 
-  Future<void> _teardownAccount() async {
-    await _teardownPortal();
-    final c = _accountContainer, s = _account;
-    _accountContainer = null;
-    _account = null;
-    c?.dispose();
-    await s?.dispose();
-  }
-
-  Future<void> _refreshPortals(AccountSession s) async {
-    try {
-      final r = await s.dio.get<List<dynamic>>('/me/portals', cancelToken: s.cancelToken);
-      if (s.isDisposed) return; // switched away meanwhile — drop
-      final fresh = [for (final p in r.data!) PortalRef.fromJson((p as Map).cast())];
-      final old = registry.byKey(s.account.key)?.portals ?? const <PortalRef>[];
-      final merged = [
-        for (final p in fresh) p.copyWith(lastUsedAt: old.where((o) => o.id == p.id).firstOrNull?.lastUsedAt)
-      ];
-      await registry.update(s.account.key, (a) => a.copyWith(portals: merged));
-      final current = _portal;
-      if (current != null && !merged.any((p) => p.id == current.portal.id)) _onPortalRevoked(current.portal.id);
-    } on DioException {
-      // offline: keep cached list
-    }
-  }
+  // _teardownAccount(): _teardownPortal, then dispose account container and AccountSession.
 
   void _onAccountRevoked(AccountKey k) {
     registry.update(k, (a) => a.copyWith(needsReauth: true));
     if (_account?.account.key == k) hooks.showReauth(k); // other accounts untouched
   }
 
-  void _onPortalRevoked(String portalId) => _serial(() async {
-        final acc = _account;
-        if (acc == null || _portal?.portal.id != portalId) return;
-        await ItemsDao(acc.db, portalId).deletePortalData();
-        await registry.update(acc.account.key, (a) => a.copyWith(
-              portals: a.portals.where((p) => p.id != portalId).toList(),
-              lastPortalId: a.lastPortalId == portalId ? null : a.lastPortalId,
-            ));
-        hooks.toast('You no longer have access to this workspace');
-        final next = registry.byKey(acc.account.key)!.defaultPortal;
-        if (next == null) {
-          await _teardownPortal();
-          await registry.setActive((account: acc.account.key, portalId: null));
-          _set(NoPortal(acc, _accountContainer!));
-        } else {
-          await _openPortal(next.id);
-        }
-      });
+  // _onPortalRevoked(portalId) (serialized): if it is the current portal — deletePortalData,
+  // remove it from the account's portals, toast, then _openPortal(defaultPortal) or NoPortal.
 
   Future<void> _signOutOne(AccountKey key, {bool pickNext = true}) async {
     final a = registry.byKey(key);
@@ -1154,9 +713,7 @@ class SessionManager extends ChangeNotifier {
     // Use THIS account's credentials for revoke + push unregister, before deleting them.
     final isActive = _account?.account.key == key;
     final s = isActive ? _account! : await _tryOpenHeadless(a);
-    if (s != null) {
-      await hooks.beforeSignOut(s); // push unregister, server revoke (short timeout, best effort)
-    }
+    if (s != null) await hooks.beforeSignOut(s); // push unregister, server revoke (short timeout)
     if (isActive) {
       await hooks.onAccountDeactivated(a); // RevenueCat logOut / analytics reset
       await _teardownAccount();
@@ -1173,33 +730,10 @@ class SessionManager extends ChangeNotifier {
     }
   }
 
-  Future<AccountSession?> _tryOpenHeadless(Account a) async {
-    try {
-      return await AccountSession.open(a, store, onRevoked: (_) {});
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _saveLocation() async {
-    if (_state case Ready(:final router, :final account)) {
-      final loc = router.routerDelegate.currentConfiguration.uri.toString();
-      await registry.update(account.account.key, (a) => a.copyWith(lastLocation: _safeLocation(loc)));
-    }
-  }
-
+  // _saveLocation(): store current router location (via _safeLocation) on the active account.
   static const _restorable = ['/home', '/items', '/inbox', '/settings'];
   String? _safeLocation(String? loc) =>
       (loc != null && _restorable.any((p) => loc == p || loc.startsWith('$p/'))) ? loc : null;
-}
-
-abstract interface class SessionHooks {
-  Future<void> onAccountActivated(Account a);
-  Future<void> onAccountDeactivated(Account a);
-  Future<void> onPortalActivated(Account a, PortalRef p);
-  Future<void> beforeSignOut(AccountSession s);
-  void showReauth(AccountKey k);
-  void toast(String message);
 }
 ```
 
@@ -1211,204 +745,48 @@ class SessionHost extends StatelessWidget {
   final SessionManager manager;
 
   @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: manager,
-      builder: (context, _) => switch (manager.state) {
-        SignedOut() => const MaterialApp(home: LoginScreen()),
-        Switching(:final target) => MaterialApp(home: SwitchingOverlay(account: target)),
-        NoPortal(:final container, :final account) => UncontrolledProviderScope(
-            key: ValueKey('acct:${account.account.key.value}'),
-            container: container,
-            child: const MaterialApp(home: CreateOrJoinPortalScreen()),
-          ),
-        // A new key per (account, portal) discards every widget, State, and Navigator
-        // from the previous session. The router is rebuilt so Back can't reach old screens.
-        Ready(:final portal, :final portalContainer, :final router) => UncontrolledProviderScope(
-            key: ValueKey('portal:${portal.key}'),
-            container: portalContainer,
-            child: MaterialApp.router(routerConfig: router),
-          ),
-      },
-    );
-  }
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: manager,
+        builder: (context, _) => switch (manager.state) {
+          SignedOut() => const MaterialApp(home: LoginScreen()),
+          Switching(:final target) => MaterialApp(home: SwitchingOverlay(account: target)),
+          NoPortal(:final container, :final account) => UncontrolledProviderScope(
+              key: ValueKey('acct:${account.account.key.value}'),
+              container: container,
+              child: const MaterialApp(home: CreateOrJoinPortalScreen()),
+            ),
+          // A new key per (account, portal) discards every widget, State, and Navigator
+          // from the previous session. The router is rebuilt so Back can't reach old screens.
+          Ready(:final portal, :final portalContainer, :final router) => UncontrolledProviderScope(
+              key: ValueKey('portal:${portal.key}'),
+              container: portalContainer,
+              child: MaterialApp.router(routerConfig: router),
+            ),
+        },
+      );
 }
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  final registry = await AccountRegistry.load();
-  final store = SecureTokenStore();
-  final root = ProviderContainer(overrides: [
-    registryProvider.overrideWithValue(registry),
-    tokenStoreProvider.overrideWithValue(store),
-  ]);
-  final manager = SessionManager(root, registry, store,
-      routerFactory: (s, initial) => buildPortalRouter(initial), hooks: AppSessionHooks());
-  await manager.restore();
-  runApp(SessionHost(manager: manager));
-}
-
-GoRouter buildPortalRouter(String initialLocation) => GoRouter(
-      initialLocation: initialLocation,
-      routes: [
-        GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
-        GoRoute(path: '/items/:id', builder: (_, s) => ItemScreen(id: s.pathParameters['id']!)),
-      ],
-    );
 ```
 
 If the app must keep a single `MaterialApp` (e.g. for a global theme or a persistent overlay), keep it above `SessionHost` and switch only the `Router`/`Navigator` subtree under the keyed `UncontrolledProviderScope`. Calling `router.go(initialLocation)` alone is **not** enough when the router lives above the session, because existing pages keep their old `State`.
 
 ### A.8 Account switcher and portal picker
 
-```dart
-class AccountSwitcherSheet extends ConsumerWidget {
-  const AccountSwitcherSheet({super.key, required this.manager});
-  final SessionManager manager;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final reg = ref.watch(registryProvider);
-    final active = reg.active?.account;
-    final accounts = [...reg.accounts]..sort((a, b) => a.key == active ? -1 : b.key == active ? 1 : 0);
-    return SafeArea(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        for (final a in accounts)
-          Semantics(
-            label: a.key == active
-                ? 'Current account, ${a.displayName}, ${a.email}'
-                : a.needsReauth
-                    ? '${a.displayName}, ${a.email}, sign in required'
-                    : 'Switch to ${a.displayName}, ${a.email}',
-            excludeSemantics: true,
-            button: true,
-            child: ListTile(
-              leading: CircleAvatar(child: Text(a.displayName.characters.first)),
-              title: Text(a.displayName, overflow: TextOverflow.ellipsis),
-              subtitle: Text(a.needsReauth ? 'Sign in again' : a.email, overflow: TextOverflow.ellipsis),
-              trailing: a.key == active ? const Icon(Icons.check) : null,
-              onTap: () async {
-                Navigator.pop(context);
-                if (a.key == active) return;
-                if (a.needsReauth) return showReauthFor(context, a); // login flow ABOVE current session
-                await manager.switchAccount(a.key);
-              },
-            ),
-          ),
-        if (accounts.length < AccountRegistry.maxAccounts)
-          ListTile(
-            leading: const Icon(Icons.person_add_alt),
-            title: const Text('Add account'),
-            onTap: () => context.push('/add-account'), // root-level modal; cancel returns here
-          )
-        else
-          const ListTile(title: Text('You can sign in to up to 5 accounts')),
-      ]),
-    );
-  }
-}
-
-class PortalPicker extends ConsumerStatefulWidget {
-  const PortalPicker({super.key, required this.manager});
-  final SessionManager manager;
-  @override
-  ConsumerState<PortalPicker> createState() => _PortalPickerState();
-}
-
-class _PortalPickerState extends ConsumerState<PortalPicker> {
-  String _q = '';
-
-  @override
-  Widget build(BuildContext context) {
-    final session = ref.watch(accountSessionProvider);
-    final current = ref.watch(portalSessionProvider).portal.id;
-    final portals = ref.watch(registryProvider).byKey(session.account.key)!.portals;
-    final recent = ([...portals]..sort((a, b) => (b.lastUsedAt ?? DateTime(0)).compareTo(a.lastUsedAt ?? DateTime(0))))
-        .where((p) => p.lastUsedAt != null && p.id != current)
-        .take(3)
-        .toList();
-    final all = portals.where((p) => p.name.toLowerCase().contains(_q.toLowerCase())).toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-
-    Widget tile(PortalRef p) => ListTile(
-          key: ValueKey(p.id),
-          title: Text(p.name, overflow: TextOverflow.ellipsis),
-          subtitle: Text(p.role.name),
-          trailing: p.id == current ? const Icon(Icons.check) : null,
-          onTap: () {
-            Navigator.pop(context);
-            if (p.id != current) widget.manager.switchPortal(p.id);
-          },
-        );
-
-    return CustomScrollView(slivers: [
-      if (portals.length > 8)
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search workspaces'),
-              onChanged: (v) => setState(() => _q = v),
-            ),
-          ),
-        ),
-      if (_q.isEmpty && recent.isNotEmpty) ...[
-        const SliverToBoxAdapter(child: ListTile(title: Text('Recent'))),
-        SliverList.list(children: [for (final p in recent) tile(p)]),
-        const SliverToBoxAdapter(child: Divider()),
-      ],
-      SliverList.builder(itemCount: all.length, itemBuilder: (_, i) => tile(all[i])),
-    ]);
-  }
-}
-```
+Sketch (boilerplate widgets omitted): `AccountSwitcherSheet` lists the active account first with a check; each row has a `Semantics` label ("Current account, …" / "…, sign in required" / "Switch to …"); tapping a `needsReauth` row runs login **above** the current session; "Add account" is a root-level modal hidden at `maxAccounts`. `PortalPicker` reads `accountSessionProvider` + `portalSessionProvider`, shows up to 3 "Recent" portals, a search field when there are more than 8, then all portals alphabetically, and calls `manager.switchPortal(id)`.
 
 ### A.9 Push and deep-link routing to (account, portal)
 
 ```dart
-sealed class RouteTarget {
-  const RouteTarget();
-}
-final class Open extends RouteTarget {
-  const Open(this.account, this.portalId, this.location, {required this.needsConfirm});
-  final Account account;
-  final String portalId, location;
-  final bool needsConfirm;
-}
-final class Choose extends RouteTarget {
-  const Choose(this.candidates, this.portalId, this.location);
-  final List<Account> candidates;
-  final String portalId, location;
-}
-final class Reauth extends RouteTarget {
-  const Reauth(this.account, this.pending);
-  final Account account;
-  final Uri pending;
-}
-final class NotMember extends RouteTarget {
-  const NotMember(this.portalId);
-  final String portalId;
-}
-final class Drop extends RouteTarget {
-  const Drop();
-}
+// RouteTarget = Open(account, portalId, location, needsConfirm) | Choose(candidates, portalId, location)
+//             | Reauth(account, pendingUri) | NotMember(portalId) | Drop
 
 class AccountRouteResolver {
   AccountRouteResolver(this.registry);
   final AccountRegistry registry;
 
-  /// Push payload: {"account_id": "...", "env": "prod", "portal_id": "...", "path": "/items/42"}
-  RouteTarget forPush(Map<String, dynamic> data) {
-    final key = AccountKey('${data['env'] ?? 'prod'}:${data['account_id']}');
-    final a = registry.byKey(key);
-    final portalId = data['portal_id'] as String?;
-    final path = data['path'] as String? ?? '/home';
-    if (a == null || portalId == null) return const Drop(); // signed out on this device
-    if (a.needsReauth) return Reauth(a, Uri(path: path));
-    if (a.portal(portalId) == null) return NotMember(portalId);
-    // A tapped notification already showed account/portal context → no extra confirm.
-    return Open(a, portalId, path, needsConfirm: false);
-  }
+  /// Push payload {account_id, env, portal_id, path}: unknown account → Drop (signed out here);
+  /// needsReauth → Reauth; not a member → NotMember; else Open(needsConfirm: false) — a tapped
+  /// notification already showed the account/portal context.
+  // RouteTarget forPush(Map<String, dynamic> data) { ... }
 
   /// Link: https://app.example.com/p/<portalId>/items/42[?account=<userId>]
   RouteTarget forLink(Uri uri) {
@@ -1424,101 +802,16 @@ class AccountRouteResolver {
     final a = candidates.single;
     if (a.needsReauth) return Reauth(a, uri);
     final act = registry.active;
-    final isCurrent = act?.account == a.key && act?.portalId == portalId;
-    return Open(a, portalId, location, needsConfirm: !isCurrent);
+    return Open(a, portalId, location, needsConfirm: !(act?.account == a.key && act?.portalId == portalId));
   }
 }
-
-Future<void> handleTarget(BuildContext context, SessionManager m, RouteTarget t) async {
-  switch (t) {
-    case Open(:final account, :final portalId, :final location, :final needsConfirm):
-      if (needsConfirm) {
-        final portalName = account.portal(portalId)!.name;
-        final ok = await showDialog<bool>(
-          context: context,
-          builder: (c) => AlertDialog(
-            title: Text('Open in $portalName?'),
-            content: Text('This will switch to ${account.email}.'),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancel')),
-              FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Switch')),
-            ],
-          ),
-        );
-        if (ok != true) return;
-      }
-      // switchAccount is a no-op on the account layer when already active; portal-only switch otherwise.
-      await m.switchAccount(account.key, portalId: portalId, location: location);
-    case Choose():
-      // show a chooser listing candidate accounts, then Open(..., needsConfirm: false)
-      break;
-    case Reauth(:final account, :final pending):
-      // store `pending`, run login for `account` above current session, re-resolve after success
-      break;
-    case NotMember(:final portalId):
-      // "This link belongs to a workspace you're not in" + Add account / Request access
-      break;
-    case Drop():
-      break;
-  }
-}
+// handleTarget: Open → confirm dialog if needsConfirm ("Open in <portal>? This will switch to <email>."),
+// then manager.switchAccount(key, portalId:, location:); Choose → account chooser; Reauth → store
+// pending URI, log in above the session, re-resolve; NotMember → "not in this workspace" + Add account.
 ```
 
 Note: `switchAccount(..., location:)` restores only allow-listed locations via `_safeLocation`; for push/link targets either widen the allow-list for the target route or navigate with `router.go(location)` on the new `Ready` router after the switch completes, so the synthesized stack is portal home → target (see **flutter-deep-links**).
 
 ### A.10 Tests (sketch)
 
-```dart
-import 'package:flutter_test/flutter_test.dart';
-import 'package:http_mock_adapter/http_mock_adapter.dart';
-
-class InMemoryTokenStore implements TokenStore {
-  final m = <AccountKey, Tokens>{};
-  @override
-  Future<Tokens?> read(AccountKey k) async => m[k];
-  @override
-  Future<void> write(AccountKey k, Tokens t) async => m[k] = t;
-  @override
-  Future<void> delete(AccountKey k) async => m.remove(k);
-  @override
-  Future<void> deleteAll() async => m.clear();
-  @override
-  Future<Set<AccountKey>> keys() async => m.keys.toSet();
-}
-
-void main() {
-  const a = AccountKey('prod:a');
-
-  test('concurrent refreshes are single-flight per account', () async {
-    final store = InMemoryTokenStore()
-      ..m[a] = Tokens(access: 'old', refresh: 'r1', expiresAt: DateTime.now().add(const Duration(hours: 1)));
-    var refreshCalls = 0;
-    final holder = TokenHolder(account: a, store: store, baseUrl: 'https://api.test', onRevoked: (_) {});
-    // In a real test, inject the bare Dio and stub /oauth/token with DioAdapter, counting calls.
-    final results = await Future.wait(List.generate(5, (_) => holder.refresh(stale: 'old')));
-    expect(results.map((t) => t.access).toSet().length, 1);
-    expect(refreshCalls, lessThanOrEqualTo(1));
-  });
-
-  test('revoked refresh marks only that account', () async {
-    // stub /oauth/token → 400 {"error":"invalid_grant"} for account A only;
-    // expect: store has no A tokens, registry A.needsReauth == true, B tokens unchanged.
-  });
-
-  testWidgets('switch mid-request drops the old response', (tester) async {
-    // 1. Ready(A); start a request held by a Completer.
-    // 2. manager.switchAccount(B); pump.
-    // 3. complete A's response; pump.
-    // expect: no A-only marker text visible; A container disposed; B DB contains no A rows.
-  });
-
-  testWidgets('push for inactive portal switches portal, not account', (tester) async {
-    // Ready(A, p1). resolver.forPush({account_id: a, portal_id: p2, path: /items/1})
-    // expect: same AccountSession instance; PortalSession.portal.id == p2; ItemScreen shown.
-  });
-
-  testWidgets('sign out last account lands on login with empty storage', (tester) async {
-    // signOut(A) when only A exists → SignedOut; store.keys() empty; accounts dir gone.
-  });
-}
-```
+Use an `InMemoryTokenStore` and `http_mock_adapter` to stub `/oauth/token`. Cover: 5 concurrent `refresh(stale: 'old')` calls → one network call, one token; `invalid_grant` for A → A tokens gone + `needsReauth`, B untouched; switch mid-request (hold A's response on a `Completer`, switch to B, complete it) → no A data visible, A container disposed; push for inactive portal → same `AccountSession`, new `PortalSession`; sign out last account → `SignedOut`, empty store, accounts dir gone.

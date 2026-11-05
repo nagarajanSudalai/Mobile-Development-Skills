@@ -172,7 +172,7 @@ Notes on Mode A:
 
 ### 6.1 Parsing
 
-- [ ] Parse the URL into a **typed target** (`sealed class DeepLinkTarget`) in a **pure function** that is unit-tested (Appendix A.2). Never scatter `uri.pathSegments[1]` across widgets.
+- [ ] Parse the URL into a **typed target** (`sealed class DeepLinkTarget`) in a **pure function** that is unit-tested (Appendix A.3–A.4). Never scatter `uri.pathSegments[1]` across widgets.
 - [ ] Check the **host against an allowlist** (prod, www, staging per flavor). For a custom scheme, check the scheme and the first segment.
 - [ ] Validate each param with a strict pattern (`^[A-Za-z0-9_-]{1,64}$` for IDs, `int.tryParse` for numbers) and reject the link if one fails. Never pass a raw param to a query, a file path or a WebView.
 - [ ] Unknown path → `UnknownLink(uri)` → fallback (§11). Never crash or silently do nothing.
@@ -305,7 +305,6 @@ All of these should produce a `Uri` and enter the **same coordinator**, so they 
 ```bash
 # iOS Simulator — Universal Link (simulator honours Associated Domains for signed builds; developer mode recommended)
 xcrun simctl openurl booted "https://example.com/p/123?utm_source=test"
-# iOS Simulator — custom scheme
 xcrun simctl openurl booted "com.example.myapp://open/p/123"
 # iOS device: send the link via Notes/Messages and tap it (pasting in Safari's address bar does not trigger UL)
 # iOS: check Apple's CDN copy of AASA
@@ -318,8 +317,7 @@ adb shell am start -W -a android.intent.action.VIEW -c android.intent.category.B
   -d "https://example.com/p/123" com.example.myapp
 # Android — warm (app in background; omit package to test the chooser / verification)
 adb shell am start -W -a android.intent.action.VIEW -d "https://example.com/p/123"
-# Android — custom scheme
-adb shell am start -W -a android.intent.action.VIEW -d "com.example.myapp://open/p/123"
+adb shell am start -W -a android.intent.action.VIEW -d "com.example.myapp://open/p/123"   # custom scheme
 # Android — verification state per host (verified / none / 1024 = failed etc.)
 adb shell pm get-app-links com.example.myapp
 adb shell pm verify-app-links --re-verify com.example.myapp
@@ -335,7 +333,7 @@ curl -s "https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.
 ```
 
 Flutter-level tests:
-- [ ] **Unit tests** for the parser (Appendix A.6): every path, every alias, invalid params, foreign hosts, encoding edge cases, UTM stripping, open-redirect attempts.
+- [ ] **Unit tests** for the parser (Appendix A.8): every path, every alias, invalid params, foreign hosts, encoding edge cases, UTM stripping, open-redirect attempts.
 - [ ] **Coordinator tests** with a fake router, fake auth and a fake clock: cold-start dedupe, the pending link resumed after login, expiry, the account switch prompt.
 - [ ] **Widget tests** for go_router: `router.go('/p/123')` then `pumpAndSettle()`, then check the screen and `router.routerDelegate.currentConfiguration` / back behaviour (`router.canPop()`).
 - [ ] **Integration tests** (`integration_test`) on a device: launch with a link (`adb` or `simctl` from the CI script before or while the test runs), then check the screen.
@@ -346,31 +344,26 @@ Flutter-level tests:
 | Scenario | Expect |
 |---|---|
 | Cold start, signed in, `https://example.com/p/123` | Product 123 shown; Back → Shop root (synthesized), not exit |
-| Cold start, signed out, link to `/orders/9` | Login shown; after login → order 9; pending link cleared |
+| Cold start, signed out, link to `/orders/9` | Login shown; after login → order 9; pending link cleared (also dropped on sign-out) |
 | Cold start, first launch, onboarding required | Onboarding, then link destination |
 | Warm start, link to product while another product open | Replaces top; one product screen, not two |
-| Warm start, bottom sheet open | Sheet dismissed, destination shown |
-| Warm start, unsaved form | Confirm discard dialog; cancel keeps form |
-| Same link tapped twice quickly | Navigates once |
-| Cold start link delivered by both `getInitialLink` and stream | Handled once |
+| Warm start, bottom sheet open / unsaved form | Sheet dismissed, destination shown / confirm discard; cancel keeps form |
+| Same link tapped twice quickly, or delivered by both `getInitialLink` and stream | Handled once |
 | Link to tab branch (`/shop/p/1`) with tabs | Shop tab selected, other tabs' state intact |
 | Unknown path `/new-feature/1` | "Link not found / update app" screen with Home |
 | Invalid param `/p/<script>` | Rejected → not-found; nothing rendered from param |
 | `?next=//evil.com` on login link | Ignored; lands on home |
-| Link for portal B while portal A active | Confirm, switch portal, then destination |
-| Link for account not signed in | Add-account login, then destination in that account |
+| Link for portal B while A active / for an account not signed in | Confirm + switch / add-account login, then destination |
 | Link to resource user can't access | "No access" screen with switch-account option |
 | Expired reset link | "Link expired" + request new link |
 | App not installed | Website shows content + store badges |
 | Deferred: install via Play link with referrer | First launch after onboarding → destination; second launch: nothing |
 | Email with click tracking (real send) | Opens app (branded tracking domain) or web with Open-in-app |
-| Push tap, cold and warm | Same coordinator path; correct account |
-| Widget / shortcut tap, cold | Destination after readiness gate |
+| Push / widget / shortcut tap, cold and warm | Same coordinator path after readiness gate; correct account |
 | OAuth callback | Consumed by auth flow; not routed as a page |
 | Flavor: staging app installed beside prod | Prod links open prod app only |
 | Android 12+, verification failed | Opens browser; `pm get-app-links` shows failure; fix server, re-verify |
 | AASA changed (new path excluded) | After CDN refresh, excluded path opens web |
-| Sign out with pending link | Pending link dropped |
 | Web build | URL bar route matches same parser; refresh keeps page |
 
 ### 14.3 Common bugs to look for in review
@@ -378,23 +371,19 @@ Flutter-level tests:
 - `FlutterDeepLinkingEnabled` / `flutter_deeplinking_enabled` left **on** (default on 3.27+) while `app_links` also handles links → double navigation, or the framework route overwrites the coordinator's.
 - Flag off with no `app_links`, or flag on with Flutter < 3.27 never set → links open the app at the home screen.
 - `GoRouter` created inside `build` → navigation reset, links lost on rebuild.
-- Splash screen calls `go('/home')` after a delay and overwrites the cold-start link.
-- Cold-start link handled twice (initial + stream).
+- Splash screen calls `go('/home')` after a delay and overwrites the cold-start link; or the cold-start link is handled twice (initial + stream).
 - `redirect` to `/login` without remembering the original location, or `from` param used without validation (open redirect).
 - `redirect` loops (`/login` redirects to `/login`), or `redirect` that `await`s slow network calls on every navigation.
-- Flat route tree → deep-linked detail screen has no Back.
-- `context.push` for every link → the stack grows without limit with repeated links.
+- Flat route tree → deep-linked detail screen has no Back; `context.push` for every link → the stack grows without limit.
 - Navigating with a `BuildContext` that is gone (captured before `await`) → "Looking up a deactivated widget's ancestor".
-- AASA served with a redirect, wrong content type, behind a WAF, or as the SPA `index.html`.
-- assetlinks.json missing the **Play App Signing** SHA-256 (works with local builds, fails for every Play user).
+- AASA served with a redirect, wrong content type, behind a WAF, or as the SPA `index.html`; assetlinks.json missing the **Play App Signing** SHA-256 (works with local builds, fails for every Play user).
 - Staging host in the prod intent filter → verification fails for the unreachable host (all hosts before Android 12).
 - `launchMode="standard"` → a second Flutter activity per link.
 - Custom AppDelegate / SceneDelegate doesn't forward `continueUserActivity` → iOS links ignored when warm.
 - Custom scheme `myapp://p/123` with Mode A → host `p` dropped, route `/123` not found.
 - Email links break because of the provider's click tracking domain.
 - Still calling `firebase_dynamic_links` (dead since Aug 2025).
-- Tokens from magic links logged in analytics or crash breadcrumbs.
-- Link performs an action (accept, delete, subscribe) without a confirm screen.
+- Tokens from magic links logged in analytics or crash breadcrumbs; link performs an action (accept, delete, subscribe) without a confirm screen.
 - Link for another account shown in the active account's session.
 - Pending link never expires → user lands on a weeks-old destination after their next login.
 - UTM/tracker params break route matching or "already on this screen" checks.
@@ -423,22 +412,7 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
 
 ### A.1 Platform config
 
-`ios/Runner/Runner.entitlements`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>com.apple.developer.associated-domains</key>
-  <array>
-    <string>applinks:example.com</string>
-    <string>applinks:www.example.com</string>
-    <string>applinks:click.example.com</string> <!-- branded email click-tracking domain -->
-  </array>
-</dict>
-</plist>
-```
+`ios/Runner/Runner.entitlements`: `com.apple.developer.associated-domains` array with `applinks:example.com`, `applinks:www.example.com`, and `applinks:click.example.com` (branded email click-tracking domain).
 
 `ios/Runner/Info.plist` (excerpt):
 
@@ -446,28 +420,16 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
 <key>FlutterDeepLinkingEnabled</key>
 <false/>  <!-- app_links handles links; framework must not also route them -->
 <key>CFBundleURLTypes</key>
-<array>
-  <dict>
-    <key>CFBundleURLName</key>
-    <string>com.example.myapp</string>
-    <key>CFBundleURLSchemes</key>
-    <array><string>com.example.myapp</string></array>
-  </dict>
-</array>
+<array><dict>
+  <key>CFBundleURLName</key><string>com.example.myapp</string>
+  <key>CFBundleURLSchemes</key><array><string>com.example.myapp</string></array>
+</dict></array>
 ```
 
 `android/app/src/main/AndroidManifest.xml` (excerpt):
 
 ```xml
-<activity
-    android:name=".MainActivity"
-    android:exported="true"
-    android:launchMode="singleTop"
-    android:taskAffinity=""
-    android:theme="@style/LaunchTheme"
-    android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-    android:hardwareAccelerated="true"
-    android:windowSoftInputMode="adjustResize">
+<activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" ...>
 
     <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
 
@@ -482,8 +444,7 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
         <data android:pathPrefix="/p/" />
         <data android:pathPrefix="/orders/" />
         <data android:pathPrefix="/invite/" />
-        <data android:pathPrefix="/w/" />
-        <data android:pathPrefix="/go/" />
+        <!-- ...one <data android:pathPrefix> per claimed prefix (/w/, /go/) -->
     </intent-filter>
 
     <!-- Custom scheme: separate filter, no autoVerify -->
@@ -493,27 +454,13 @@ Mode B: built-in flag **off**, `app_links` feeds a coordinator, go_router render
         <category android:name="android.intent.category.BROWSABLE" />
         <data android:scheme="com.example.myapp" android:host="open" />
     </intent-filter>
-
-    <intent-filter>
-        <action android:name="android.intent.action.MAIN" />
-        <category android:name="android.intent.category.LAUNCHER" />
-    </intent-filter>
+    <!-- MAIN/LAUNCHER filter unchanged -->
 </activity>
 ```
 
 Note that `<data>` elements inside one intent filter **combine** (every scheme × host × path). That is why the custom scheme lives in its own filter.
 
-`android/app/build.gradle.kts` (flavor hosts):
-
-```kotlin
-productFlavors {
-    create("prod") { manifestPlaceholders["deepLinkHost"] = "example.com" }
-    create("staging") {
-        applicationIdSuffix = ".staging"
-        manifestPlaceholders["deepLinkHost"] = "staging.example.com"
-    }
-}
-```
+`android/app/build.gradle.kts`: per flavor set `manifestPlaceholders["deepLinkHost"]` (`example.com` for prod, `staging.example.com` with `applicationIdSuffix = ".staging"` for staging).
 
 ### A.2 Hosted files
 
@@ -521,22 +468,14 @@ productFlavors {
 
 ```json
 {
-  "applinks": {
-    "details": [
-      {
-        "appIDs": ["ABCDE12345.com.example.myapp"],
-        "components": [
-          { "/": "/p/*/reviews/internal*", "exclude": true, "comment": "web only" },
-          { "/": "/p/*" },
-          { "/": "/orders/*" },
-          { "/": "/invite/*" },
-          { "/": "/w/*" },
-          { "/": "/go/*" },
-          { "/": "/auth/magic", "?": { "token": "?*" } }
-        ]
-      }
+  "applinks": { "details": [{
+    "appIDs": ["ABCDE12345.com.example.myapp"],
+    "components": [
+      { "/": "/p/*/reviews/internal*", "exclude": true, "comment": "web only" },
+      { "/": "/p/*" }, { "/": "/orders/*" }, { "/": "/invite/*" }, { "/": "/w/*" }, { "/": "/go/*" },
+      { "/": "/auth/magic", "?": { "token": "?*" } }
     ]
-  },
+  }] },
   "webcredentials": { "apps": ["ABCDE12345.com.example.myapp"] }
 }
 ```
@@ -544,19 +483,9 @@ productFlavors {
 `https://example.com/.well-known/assetlinks.json`:
 
 ```json
-[
-  {
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "com.example.myapp",
-      "sha256_cert_fingerprints": [
-        "AA:BB:...:PLAY_APP_SIGNING_KEY_SHA256",
-        "CC:DD:...:UPLOAD_KEY_SHA256"
-      ]
-    }
-  }
-]
+[{ "relation": ["delegate_permission/common.handle_all_urls"],
+   "target": { "namespace": "android_app", "package_name": "com.example.myapp",
+               "sha256_cert_fingerprints": ["AA:BB:...:PLAY_APP_SIGNING_KEY_SHA256", "CC:DD:...:UPLOAD_KEY_SHA256"] } }]
 ```
 
 ### A.3 Link target model
@@ -565,63 +494,51 @@ productFlavors {
 // lib/deep_links/deep_link_target.dart
 sealed class DeepLinkTarget {
   const DeepLinkTarget();
-
-  /// Whether the destination needs a signed-in session.
-  bool get requiresAuth => true;
-
-  /// Opaque account/portal hint carried by the link, if any.
-  String? get portalId => null;
+  bool get requiresAuth => true; // destination needs a signed-in session
+  String? get portalId => null;  // opaque account/portal hint carried by the link
 }
 
 final class ProductLink extends DeepLinkTarget {
   const ProductLink(this.productId, {this.variant});
   final String productId;
   final String? variant;
-  @override
-  bool get requiresAuth => false;
+  @override bool get requiresAuth => false;
 }
 
 final class OrderLink extends DeepLinkTarget {
   const OrderLink(this.orderId, {this.portalId});
   final String orderId;
-  @override
-  final String? portalId;
+  @override final String? portalId;
 }
 
 final class InviteLink extends DeepLinkTarget {
   const InviteLink(this.code);
   final String code;
-  @override
-  bool get requiresAuth => false; // landing page explains, then asks to sign in
+  @override bool get requiresAuth => false; // landing page explains, then asks to sign in
 }
 
 final class MagicLoginLink extends DeepLinkTarget {
   const MagicLoginLink(this.token);
   final String token;
-  @override
-  bool get requiresAuth => false; // this IS the login
-  @override
-  String toString() => 'MagicLoginLink(<redacted>)';
+  @override bool get requiresAuth => false; // this IS the login
+  @override String toString() => 'MagicLoginLink(<redacted>)';
 }
 
 final class CampaignLink extends DeepLinkTarget {
   const CampaignLink(this.slug);
   final String slug; // resolved server-side to a destination
-  @override
-  bool get requiresAuth => false;
+  @override bool get requiresAuth => false;
 }
 
 final class HomeLink extends DeepLinkTarget {
   const HomeLink();
-  @override
-  bool get requiresAuth => false;
+  @override bool get requiresAuth => false;
 }
 
 final class UnknownLink extends DeepLinkTarget {
   const UnknownLink(this.uri);
   final Uri uri;
-  @override
-  bool get requiresAuth => false;
+  @override bool get requiresAuth => false;
 }
 
 /// Result of parsing: target plus attribution metadata stripped from the URL.
@@ -642,19 +559,15 @@ enum LinkSource { universalLink, customScheme, push, widget, shortcut, deferred,
 import 'deep_link_target.dart';
 
 class DeepLinkParser {
-  DeepLinkParser({
-    required Set<String> allowedHosts,
-    required this.customScheme,
-  }) : _hosts = allowedHosts.map((h) => h.toLowerCase()).toSet();
+  DeepLinkParser({required Set<String> allowedHosts, required this.customScheme})
+      : _hosts = allowedHosts.map((h) => h.toLowerCase()).toSet();
 
   final Set<String> _hosts;
   final String customScheme;
 
   static final _id = RegExp(r'^[A-Za-z0-9_-]{1,64}$');
   static final _token = RegExp(r'^[A-Za-z0-9._~-]{16,512}$');
-  static const _utmKeys = {
-    'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term',
-  };
+  static const _utmKeys = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term'};
 
   ParsedLink parse(Uri raw, {LinkSource? source}) {
     final uri = _normalize(raw);
@@ -676,9 +589,7 @@ class DeepLinkParser {
     if (value == null || value.isEmpty) return null;
     final uri = Uri.tryParse(value);
     if (uri == null || uri.hasScheme || uri.hasAuthority) return null;
-    if (!value.startsWith('/') || value.startsWith('//') || value.contains(r'\')) {
-      return null;
-    }
+    if (!value.startsWith('/') || value.startsWith('//') || value.contains(r'\')) return null;
     return value;
   }
 
@@ -744,12 +655,6 @@ Slugs like `/p/123-blue-shoes` pass the ID pattern as a whole. If you need the n
 // lib/deep_links/pending_link_store.dart
 import 'deep_link_target.dart';
 
-class PendingLink {
-  PendingLink(this.link, this.createdAt);
-  final ParsedLink link;
-  final DateTime createdAt;
-}
-
 /// In-memory by default. Persist only non-secret targets if the gate can outlive
 /// the process (e.g. email verification in another app). Never persist tokens.
 class PendingLinkStore {
@@ -758,9 +663,9 @@ class PendingLinkStore {
 
   final DateTime Function() _clock;
   final Duration ttl;
-  PendingLink? _pending;
+  ({ParsedLink link, DateTime createdAt})? _pending;
 
-  void save(ParsedLink link) => _pending = PendingLink(link, _clock()); // latest wins
+  void save(ParsedLink link) => _pending = (link: link, createdAt: _clock()); // latest wins
 
   /// Returns and clears the pending link if it has not expired.
   ParsedLink? take() {
@@ -824,12 +729,10 @@ class DeepLinkCoordinator {
   final LinkAnalytics analytics;
   final AppLinks _appLinks;
   final DateTime Function() _clock;
-
   StreamSubscription<Uri>? _sub;
   Uri? _lastUri;
   DateTime? _lastAt;
-  bool _coldStart = true;
-  bool _busy = false;
+  bool _coldStart = true, _busy = false;
 
   Future<void> start() async {
     session.changes.addListener(_onSessionChanged);
@@ -844,10 +747,7 @@ class DeepLinkCoordinator {
     WidgetsBinding.instance.addPostFrameCallback((_) => _coldStart = false);
   }
 
-  void dispose() {
-    _sub?.cancel();
-    session.changes.removeListener(_onSessionChanged);
-  }
+  void dispose() { _sub?.cancel(); session.changes.removeListener(_onSessionChanged); }
 
   /// Entry for push taps, widgets, shortcuts, deferred links, in-app links.
   void handleUri(Uri uri, LinkSource source) => _handle(parser.parse(uri, source: source));
@@ -857,8 +757,7 @@ class DeepLinkCoordinator {
     if (uri == _lastUri && _lastAt != null && now.difference(_lastAt!) < const Duration(seconds: 2)) {
       return; // same link delivered twice (initial + stream, or double tap)
     }
-    _lastUri = uri;
-    _lastAt = now;
+    (_lastUri, _lastAt) = (uri, now);
     _handle(parser.parse(uri));
   }
 
@@ -875,13 +774,8 @@ class DeepLinkCoordinator {
 
   Future<void> _handle(ParsedLink link) async {
     final t = link.target;
-    void log(String outcome) => analytics('deep_link_opened', {
-          'source': link.source.name,
-          'route': t.runtimeType.toString(),
-          'app_state': _coldStart ? 'cold' : 'warm',
-          'outcome': outcome,
-          ...link.utm,
-        });
+    void log(String outcome) => analytics('deep_link_opened', {'source': link.source.name,
+          'route': t.runtimeType.toString(), 'app_state': _coldStart ? 'cold' : 'warm', 'outcome': outcome, ...link.utm});
 
     if (!_ready) {
       pending.save(link);
@@ -893,10 +787,7 @@ class DeepLinkCoordinator {
     }
     _busy = true;
     try {
-      if (t is UnknownLink) {
-        router.go('/not-found');
-        return log('unknown');
-      }
+      if (t is UnknownLink) { router.go('/not-found'); return log('unknown'); }
       if (t is MagicLoginLink) {
         final ok = await session.signInWithMagicToken(t.token);
         router.go(ok ? '/home' : '/link-expired');
@@ -914,10 +805,7 @@ class DeepLinkCoordinator {
       }
       final portal = t.portalId;
       if (portal != null && portal != session.activePortalId) {
-        if (!session.canAccessPortal(portal)) {
-          router.go('/no-access');
-          return log('no_access');
-        }
+        if (!session.canAccessPortal(portal)) { router.go('/no-access'); return log('no_access'); }
         final switched = await session.confirmAndSwitchPortal(portal);
         if (!switched) return log('switch_cancelled');
         log('account_switch');
@@ -935,10 +823,8 @@ class DeepLinkCoordinator {
 
   void _route(DeepLinkTarget t) {
     final location = switch (t) {
-      ProductLink(:final productId, :final variant) => Uri(
-          path: '/shop/p/$productId',
-          queryParameters: variant == null ? null : {'variant': variant},
-        ).toString(),
+      ProductLink(:final productId, :final variant) =>
+        Uri(path: '/shop/p/$productId', queryParameters: variant == null ? null : {'variant': variant}).toString(),
       OrderLink(:final orderId) => '/account/orders/$orderId',
       InviteLink(:final code) => '/invite/$code',
       CampaignLink(:final slug) => '/go/$slug', // screen resolves slug via API
@@ -971,9 +857,7 @@ GoRouter buildRouter(AuthState auth) => GoRouter(
         final loc = state.matchedLocation;
         final publicRoutes = {'/login', '/not-found', '/link-expired', '/no-access'};
         final isPublic = publicRoutes.contains(loc) ||
-            loc.startsWith('/shop') ||
-            loc.startsWith('/invite') ||
-            loc.startsWith('/go');
+            ['/shop', '/invite', '/go'].any(loc.startsWith);
         if (!auth.isRestored) return null; // splash shown by the screens themselves
         if (!auth.isSignedIn && !isPublic) {
           return Uri(path: '/login', queryParameters: {'from': state.uri.toString()}).toString();
@@ -986,52 +870,24 @@ GoRouter buildRouter(AuthState auth) => GoRouter(
       },
       errorBuilder: (context, state) => const NotFoundScreen(),
       routes: [
-        GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
-        GoRoute(path: '/onboarding', builder: (_, __) => const OnboardingScreen()),
-        GoRoute(path: '/not-found', builder: (_, __) => const NotFoundScreen()),
-        GoRoute(path: '/link-expired', builder: (_, __) => const LinkExpiredScreen()),
-        GoRoute(path: '/no-access', builder: (_, __) => const NoAccessScreen()),
-        GoRoute(
-          path: '/invite/:code',
-          builder: (_, s) => InviteScreen(code: s.pathParameters['code']!),
-        ),
-        GoRoute(
-          path: '/go/:slug',
-          builder: (_, s) => CampaignResolverScreen(slug: s.pathParameters['slug']!),
-        ),
+        // plus plain GoRoutes for /login, /onboarding, /not-found, /link-expired, /no-access
+        GoRoute(path: '/invite/:code', builder: (_, s) => InviteScreen(code: s.pathParameters['code']!)),
+        GoRoute(path: '/go/:slug', builder: (_, s) => CampaignResolverScreen(slug: s.pathParameters['slug']!)),
         StatefulShellRoute.indexedStack(
           builder: (_, __, shell) => HomeShell(shell: shell),
           branches: [
+            StatefulShellBranch(routes: [GoRoute(path: '/home', builder: (_, __) => const HomeScreen())]),
             StatefulShellBranch(routes: [
-              GoRoute(path: '/home', builder: (_, __) => const HomeScreen()),
+              // /shop/p/:id -> Back pops to /shop (synthesized stack)
+              GoRoute(path: '/shop', builder: (_, __) => const ShopScreen(), routes: [
+                GoRoute(path: 'p/:id', builder: (_, s) => ProductScreen(
+                    id: s.pathParameters['id']!, variant: s.uri.queryParameters['variant'])),
+              ]),
             ]),
             StatefulShellBranch(routes: [
-              GoRoute(
-                path: '/shop',
-                builder: (_, __) => const ShopScreen(),
-                routes: [
-                  // /shop/p/:id -> Back pops to /shop (synthesized stack)
-                  GoRoute(
-                    path: 'p/:id',
-                    builder: (_, s) => ProductScreen(
-                      id: s.pathParameters['id']!,
-                      variant: s.uri.queryParameters['variant'],
-                    ),
-                  ),
-                ],
-              ),
-            ]),
-            StatefulShellBranch(routes: [
-              GoRoute(
-                path: '/account',
-                builder: (_, __) => const AccountScreen(),
-                routes: [
-                  GoRoute(
-                    path: 'orders/:id',
-                    builder: (_, s) => OrderScreen(id: s.pathParameters['id']!),
-                  ),
-                ],
-              ),
+              GoRoute(path: '/account', builder: (_, __) => const AccountScreen(), routes: [
+                GoRoute(path: 'orders/:id', builder: (_, s) => OrderScreen(id: s.pathParameters['id']!)),
+              ]),
             ]),
           ],
         ),
@@ -1051,10 +907,7 @@ Future<void> main() async {
   final coordinator = DeepLinkCoordinator(
     router: router,
     session: auth,
-    parser: DeepLinkParser(
-      allowedHosts: {'example.com', 'www.example.com'},
-      customScheme: 'com.example.myapp',
-    ),
+    parser: DeepLinkParser(allowedHosts: {'example.com', 'www.example.com'}, customScheme: 'com.example.myapp'),
     pending: PendingLinkStore(),
     analytics: (e, p) => debugPrint('$e $p'), // replace with your analytics
   );
@@ -1067,111 +920,10 @@ Future<void> main() async {
 ### A.8 Parser and store unit tests
 
 ```dart
-// test/deep_link_parser_test.dart
-import 'package:flutter_test/flutter_test.dart';
-import 'package:myapp/deep_links/deep_link_parser.dart';
-import 'package:myapp/deep_links/deep_link_target.dart';
-import 'package:myapp/deep_links/pending_link_store.dart';
-
-void main() {
-  final parser = DeepLinkParser(
-    allowedHosts: {'example.com', 'www.example.com'},
-    customScheme: 'com.example.myapp',
-  );
-  DeepLinkTarget p(String s) => parser.parse(Uri.parse(s)).target;
-
-  group('DeepLinkParser', () {
-    test('product link and legacy alias', () {
-      expect(p('https://example.com/p/123'), isA<ProductLink>());
-      expect((p('https://www.example.com/product/123') as ProductLink).productId, '123');
-    });
-
-    test('host is case-insensitive, trailing slash tolerated', () {
-      expect(p('https://EXAMPLE.com/p/123/'), isA<ProductLink>());
-    });
-
-    test('variant validated, bad variant dropped', () {
-      expect((p('https://example.com/p/1?variant=red') as ProductLink).variant, 'red');
-      expect((p('https://example.com/p/1?variant=%3Cx%3E') as ProductLink).variant, isNull);
-    });
-
-    test('foreign host, http and odd schemes rejected', () {
-      expect(p('https://evil.com/p/123'), isA<UnknownLink>());
-      expect(p('http://example.com/p/123'), isA<UnknownLink>());
-      expect(p('javascript:alert(1)'), isA<UnknownLink>());
-    });
-
-    test('invalid id rejected', () {
-      expect(p('https://example.com/p/%3Cscript%3E'), isA<UnknownLink>());
-      expect(p('https://example.com/p/${'a' * 65}'), isA<UnknownLink>());
-    });
-
-    test('custom scheme uses host "open"', () {
-      expect(p('com.example.myapp://open/p/9'), isA<ProductLink>());
-      expect(p('com.example.myapp://p/9'), isA<UnknownLink>());
-    });
-
-    test('portal prefix and query hint', () {
-      final a = p('https://example.com/w/acme/orders/7') as OrderLink;
-      expect(a.portalId, 'acme');
-      final b = p('https://example.com/orders/7?ws=beta') as OrderLink;
-      expect(b.portalId, 'beta');
-    });
-
-    test('utm captured, unknown params ignored', () {
-      final r = parser.parse(Uri.parse(
-          'https://example.com/p/1?utm_source=mail&utm_campaign=s&fbclid=x'));
-      expect(r.target, isA<ProductLink>());
-      expect(r.utm, {'utm_source': 'mail', 'utm_campaign': 's'});
-    });
-
-    test('magic login requires well-formed token, toString redacts', () {
-      final t = p('https://example.com/auth/magic?token=${'a' * 32}');
-      expect(t, isA<MagicLoginLink>());
-      expect(t.toString(), isNot(contains('aaaa')));
-      expect(p('https://example.com/auth/magic?token=short'), isA<UnknownLink>());
-    });
-
-    test('unknown path', () {
-      expect(p('https://example.com/new-feature/1'), isA<UnknownLink>());
-      expect(p('https://example.com/'), isA<HomeLink>());
-    });
-  });
-
-  group('safeRelativeLocation', () {
-    test('accepts in-app paths only', () {
-      expect(DeepLinkParser.safeRelativeLocation('/account/orders/1'), '/account/orders/1');
-      expect(DeepLinkParser.safeRelativeLocation('//evil.com'), isNull);
-      expect(DeepLinkParser.safeRelativeLocation('https://evil.com'), isNull);
-      expect(DeepLinkParser.safeRelativeLocation(r'/\evil.com'), isNull);
-      expect(DeepLinkParser.safeRelativeLocation('javascript:alert(1)'), isNull);
-      expect(DeepLinkParser.safeRelativeLocation(null), isNull);
-    });
-  });
-
-  group('PendingLinkStore', () {
-    test('latest wins, take clears, expiry honoured', () {
-      var now = DateTime(2026, 1, 1, 12);
-      final store = PendingLinkStore(clock: () => now);
-      store.save(parser.parse(Uri.parse('https://example.com/p/1')));
-      store.save(parser.parse(Uri.parse('https://example.com/p/2')));
-      expect((store.take()!.target as ProductLink).productId, '2');
-      expect(store.take(), isNull);
-
-      store.save(parser.parse(Uri.parse('https://example.com/p/3')));
-      now = now.add(const Duration(hours: 2));
-      expect(store.take(), isNull); // expired
-    });
-
-    test('invites live longer', () {
-      var now = DateTime(2026, 1, 1);
-      final store = PendingLinkStore(clock: () => now);
-      store.save(parser.parse(Uri.parse('https://example.com/invite/abc')));
-      now = now.add(const Duration(hours: 5));
-      expect(store.take()?.target, isA<InviteLink>());
-    });
-  });
-}
+// test/deep_link_parser_test.dart (sketch): parse() maps each allowed https host + custom scheme to the
+// right target; rejects foreign hosts, http, bad ids, oversized input -> UnknownLink; strips utm_* into
+// .utm; safeRelativeLocation rejects absolute, '//' and '\\' paths. PendingLinkStore: take() returns
+// once then null, honours ttl (24 h for InviteLink) with an injected clock, clear() on sign-out.
 ```
 
 ### A.9 Android install referrer (deferred, first launch only)
@@ -1179,56 +931,20 @@ void main() {
 A small platform channel. Use a maintained plugin instead if the project already has one.
 
 ```kotlin
-// android/app/build.gradle.kts: implementation("com.android.installreferrer:installreferrer:2.2")
-// MainActivity.kt
-class MainActivity : FlutterActivity() {
-    override fun configureFlutterEngine(engine: FlutterEngine) {
-        super.configureFlutterEngine(engine)
-        MethodChannel(engine.dartExecutor.binaryMessenger, "app/install_referrer")
-            .setMethodCallHandler { call, result ->
-                if (call.method != "get") return@setMethodCallHandler result.notImplemented()
-                val client = InstallReferrerClient.newBuilder(this).build()
-                client.startConnection(object : InstallReferrerStateListener {
-                    override fun onInstallReferrerSetupFinished(code: Int) {
-                        val ref = if (code == InstallReferrerClient.InstallReferrerResponse.OK)
-                            runCatching { client.installReferrer.installReferrer }.getOrNull() else null
-                        client.endConnection()
-                        result.success(ref)
-                    }
-                    override fun onInstallReferrerServiceDisconnected() {}
-                })
-            }
-    }
-}
+// MainActivity.kt (sketch; dependency com.android.installreferrer:installreferrer): in configureFlutterEngine
+// register MethodChannel "app/install_referrer"; on "get" build InstallReferrerClient, startConnection, and in
+// onInstallReferrerSetupFinished return installReferrer.installReferrer when the code is OK (else null),
+// then endConnection(). Reply exactly once.
 ```
 
 ```dart
-// lib/deep_links/deferred_link.dart
-import 'dart:io';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-/// Returns a deferred deep link URI once, on first launch, or null.
-Future<Uri?> consumeDeferredLink() async {
-  final prefs = await SharedPreferences.getInstance();
-  if (prefs.getBool('deferred_link_consumed') ?? false) return null;
-  await prefs.setBool('deferred_link_consumed', true); // mark first, never re-apply
-
-  if (!Platform.isAndroid) return null; // iOS: server-side token / account-based match
-  try {
-    final raw = await const MethodChannel('app/install_referrer').invokeMethod<String>('get');
-    if (raw == null) return null;
-    // Play URL: &referrer=deep_link%3Dhttps%253A%252F%252Fexample.com%252Fp%252F123
-    final link = Uri.splitQueryString(raw)['deep_link'];
-    return link == null ? null : Uri.tryParse(link);
-  } on PlatformException {
-    return null;
-  }
-}
-
-// After onboarding completes:
-//   final uri = await consumeDeferredLink();
-//   if (uri != null) coordinator.handleUri(uri, LinkSource.deferred);
+// lib/deep_links/deferred_link.dart (sketch) — Future<Uri?> consumeDeferredLink():
+// 1. SharedPreferences flag 'deferred_link_consumed': return null if set; set it BEFORE reading (never re-apply).
+// 2. iOS: return null (server-side token / account-based match instead).
+// 3. Android: invoke MethodChannel('app/install_referrer').get; Uri.splitQueryString(raw)['deep_link']
+//    (Play URL: &referrer=deep_link%3Dhttps%253A%252F%252Fexample.com%252Fp%252F123) -> Uri.tryParse;
+//    PlatformException -> null.
+// After onboarding: if (uri != null) coordinator.handleUri(uri, LinkSource.deferred);
 ```
 
 The deferred URI goes through the same parser. A forged referrer (anyone can craft a Play URL) gets the same validation as any other link.

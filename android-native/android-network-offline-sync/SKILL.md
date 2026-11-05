@@ -457,31 +457,20 @@ object NetworkModule {
     @Provides @Singleton
     fun okHttp(@ApplicationContext ctx: Context, env: ApiEnvironment, tokens: TokenManager): OkHttpClient =
         OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(60, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS).callTimeout(60, TimeUnit.SECONDS)
             .cache(Cache(File(ctx.cacheDir, "http"), 50L * 1024 * 1024)) // per account dir in multi-account
             .addInterceptor(HeadersInterceptor(env))
             .addInterceptor(AuthInterceptor(tokens))
             .addInterceptor(IdempotencyKeyInterceptor())
             .authenticator(TokenAuthenticator(tokens))
-            .apply {
-                if (BuildConfig.DEBUG) addNetworkInterceptor(
-                    HttpLoggingInterceptor().apply {
-                        level = HttpLoggingInterceptor.Level.HEADERS
-                        redactHeader("Authorization"); redactHeader("Cookie")
-                    })
-            }
+            // DEBUG only: addNetworkInterceptor(HttpLoggingInterceptor(HEADERS)) with Authorization/Cookie redacted
             .build()
 
     @Provides @Singleton
     fun retrofit(client: OkHttpClient, env: ApiEnvironment, json: Json): Retrofit =
-        Retrofit.Builder()
-            .baseUrl(env.baseUrl)
-            .client(client)
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
+        Retrofit.Builder().baseUrl(env.baseUrl).client(client)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType())).build()
 
     @Provides @Singleton fun tasksApi(r: Retrofit): TasksApi = r.create()
 }
@@ -491,8 +480,7 @@ object NetworkModule {
 
 ```kotlin
 sealed class AppError(cause: Throwable? = null) : Exception(cause) {
-    data object Offline : AppError()
-    data object Timeout : AppError()
+    data object Offline : AppError(); data object Timeout : AppError()
     class Tls(c: Throwable) : AppError(c)
     class Http(val code: Int, val serverCode: String?, val retryAfterMs: Long?, val body: String?) : AppError()
     class Decoding(c: Throwable) : AppError(c)
@@ -532,13 +520,8 @@ fun parseRetryAfter(v: String?): Long? = v?.let {
 
 /** Retries only when the caller says the operation is idempotent (GET, or POST with Idempotency-Key). */
 suspend fun <T> withRetry(
-    json: Json,
-    idempotent: Boolean,
-    maxAttempts: Int = 4,
-    baseMs: Long = 500,
-    capMs: Long = 30_000,
-    random: Random = Random.Default,
-    block: suspend () -> T,
+    json: Json, idempotent: Boolean, maxAttempts: Int = 4, baseMs: Long = 500, capMs: Long = 30_000,
+    random: Random = Random.Default, block: suspend () -> T,
 ): T {
     var attempt = 0
     while (true) {
@@ -676,12 +659,8 @@ class TaskRepository @Inject constructor(
     suspend fun refresh() = syncScheduler.syncNow()
 }
 
-@HiltViewModel
-class TasksViewModel @Inject constructor(repo: TaskRepository, connectivity: ConnectivityObserver) : ViewModel() {
-    val state: StateFlow<TasksUiState> = combine(repo.tasks, repo.pendingCount, connectivity.status) { t, p, c ->
-        TasksUiState(items = t, pending = p, offline = c == Connectivity.Offline)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TasksUiState())
-}
+// TasksViewModel: combine(repo.tasks, repo.pendingCount, connectivity.status) into TasksUiState(items, pending, offline)
+// .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TasksUiState()) — UI observes Room only.
 ```
 
 ### A.5 Outbox processor
@@ -820,24 +799,11 @@ class SyncEngine @Inject constructor(
 ```kotlin
 enum class Connectivity { Online, Offline }
 
-@Singleton
-class ConnectivityObserver @Inject constructor(@ApplicationContext ctx: Context, @AppScope scope: CoroutineScope) {
-    private val cm = ctx.getSystemService(ConnectivityManager::class.java)
-
-    val status: StateFlow<Connectivity> = callbackFlow {
-        fun current() = cm.getNetworkCapabilities(cm.activeNetwork)
-            ?.takeIf { it.hasCapability(NET_CAPABILITY_INTERNET) && it.hasCapability(NET_CAPABILITY_VALIDATED) }
-            ?.let { Connectivity.Online } ?: Connectivity.Offline
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) { trySend(current()) }
-            override fun onLost(n: Network) { trySend(current()) }
-        }
-        trySend(current())
-        cm.registerDefaultNetworkCallback(cb)
-        awaitClose { cm.unregisterNetworkCallback(cb) }
-    }.debounce(1_000).distinctUntilChanged()
-        .stateIn(scope, SharingStarted.Eagerly, Connectivity.Online)   // hint only: requests still decide
-}
+// @Singleton ConnectivityObserver(@ApplicationContext ctx, @AppScope scope):
+//   status: StateFlow<Connectivity> = callbackFlow { registerDefaultNetworkCallback; on onCapabilitiesChanged /
+//   onLost trySend(current()); awaitClose { unregisterNetworkCallback } } where current() = Online only if the
+//   active network has NET_CAPABILITY_INTERNET && NET_CAPABILITY_VALIDATED.
+//   .debounce(1_000).distinctUntilChanged().stateIn(scope, Eagerly, Online) — a hint only: requests still decide.
 ```
 
 ### A.8 Background sync registration (WorkManager)
@@ -883,13 +849,8 @@ class SyncScheduler @Inject constructor(
         wm.enqueueUniqueWork("sync-$accountId", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
     }
 
-    fun schedulePeriodic() {
-        val req = PeriodicWorkRequestBuilder<SyncWorker>(1, TimeUnit.HOURS, 15, TimeUnit.MINUTES)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED)
-                .setRequiresBatteryNotLow(true).build())
-            .setInputData(data()).build()
-        wm.enqueueUniquePeriodicWork("sync-periodic-$accountId", ExistingPeriodicWorkPolicy.UPDATE, req) // not REPLACE
-    }
+    // schedulePeriodic(): PeriodicWorkRequestBuilder<SyncWorker>(1h, flex 15m), CONNECTED + battery-not-low,
+    // enqueueUniquePeriodicWork("sync-periodic-$accountId", ExistingPeriodicWorkPolicy.UPDATE, req) — not REPLACE.
 
     suspend fun syncNow() = engine.sync()                              // pull-to-refresh, in foreground
 
@@ -901,13 +862,7 @@ class SyncScheduler @Inject constructor(
 // and enqueueUniqueWork("sync-$acct", APPEND_OR_REPLACE, req) -- never network work in the service.
 ```
 
-Manifest (API 34+), when expedited work may fall back to a foreground service:
-
-```xml
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-<service android:name="androidx.work.impl.foreground.SystemForegroundService"
-    android:foregroundServiceType="dataSync" tools:node="merge" />
-```
+Manifest (API 34+), when expedited work may fall back to a foreground service: `FOREGROUND_SERVICE_DATA_SYNC` permission and `androidx.work.impl.foreground.SystemForegroundService` merged with `foregroundServiceType="dataSync"`.
 
 ### A.9 Realtime WebSocket (sketch)
 
@@ -923,13 +878,7 @@ Manifest (API 34+), when expedited work may fall back to a foreground service:
 ### A.10 Test (MockWebServer: idempotency key reused across retries)
 
 ```kotlin
-@Test fun `retries POST with same idempotency key`() = runTest {
-    server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
-    server.enqueue(MockResponse().setBody("""{"id":"t1","title":"a","done":false,"version":1,"updatedAt":"x"}"""))
-    withRetry(json, idempotent = true) { api.create("t1", TaskDto("t1", "a", false, 0, ""), IdempotencyKey("k-1")) }
-    assertEquals("k-1", server.takeRequest().getHeader("Idempotency-Key"))
-    assertEquals("k-1", server.takeRequest().getHeader("Idempotency-Key"))
-}
-// Single-flight: dispatcher returns 401 unless "Bearer new"; launch 20 calls; assert exactly one
-// recorded request had path "/token" (count paths via server.takeRequest() in a loop of server.requestCount).
+// MockWebServer: enqueue 503 (Retry-After: 0) then 200; call api.create(..., IdempotencyKey("k-1")) inside
+// withRetry(idempotent = true); assert both recorded requests carry Idempotency-Key "k-1".
+// Single-flight: dispatcher returns 401 unless "Bearer new"; launch 20 calls; assert exactly one "/token" request.
 ```

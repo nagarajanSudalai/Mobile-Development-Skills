@@ -398,35 +398,24 @@ Simplified but complete enough to adapt. `Note` stands in for your synced entity
 ```swift
 import Foundation
 
-struct APIEnvironment: Sendable {
-    let baseURL: URL
-    static let prodEU = APIEnvironment(baseURL: URL(string: "https://eu.api.example.com/v1/")!)
-    static let prodUS = APIEnvironment(baseURL: URL(string: "https://us.api.example.com/v1/")!)
-}
+struct APIEnvironment: Sendable { let baseURL: URL }   // one per region/env, e.g. eu/us prod
 
 enum HTTPMethod: String, Sendable { case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE" }
 
 struct Endpoint<Response: Decodable & Sendable>: Sendable {
-    var method: HTTPMethod = .get
-    var path: String
-    var query: [URLQueryItem] = []
-    var body: Data? = nil
-    var headers: [String: String] = [:]
+    var method: HTTPMethod = .get; var path: String; var query: [URLQueryItem] = []
+    var body: Data? = nil; var headers: [String: String] = [:]
     var idempotencyKey: String? = nil          // set by caller for POST/PATCH (outbox)
     var requiresAuth = true
     var isIdempotent: Bool { method != .post && method != .patch || idempotencyKey != nil }
 }
 
 struct EmptyResponse: Decodable, Sendable {}
-
 struct ServerErrorBody: Decodable, Sendable { let code: String?; let message: String? }
 
 enum APIError: Error, Sendable, Equatable {
-    case offline, timeout, cancelled, tls
-    case unauthorized, forbidden, notFound
-    case conflict(serverBody: Data?)
-    case rateLimited(retryAfter: TimeInterval?)
-    case server(status: Int, retryAfter: TimeInterval?)
+    case offline, timeout, cancelled, tls, unauthorized, forbidden, notFound
+    case conflict(serverBody: Data?), rateLimited(retryAfter: TimeInterval?), server(status: Int, retryAfter: TimeInterval?)
     case http(status: Int, code: String?, message: String?)
     case decoding(endpoint: String, detail: String)
     case unknown(String)
@@ -440,26 +429,19 @@ enum APIError: Error, Sendable, Equatable {
         }
     }
 
-    var userMessage: String {
-        switch self {
-        case .offline: String(localized: "You're offline. We'll sync when you're back online.")
-        case .unauthorized: String(localized: "Please sign in again.")
-        case .http(_, _, let message?): message      // only if server guarantees user-safe text
-        default: String(localized: "Something went wrong. Please try again.")
-        }
-    }
+    // var userMessage: String — localized per case: offline → "We'll sync when you're back online",
+    // unauthorized → "Please sign in again", .http(message?) only if server guarantees user-safe text, else generic.
 
     static func from(_ error: Error) -> APIError {
-        if let e = error as? APIError { return e }
-        if error is CancellationError { return .cancelled }
+        if let e = error as? APIError { return e }; if error is CancellationError { return .cancelled }
         guard let u = error as? URLError else { return .unknown(String(describing: error)) }
+        // Also map: notConnectedToInternet, networkConnectionLost, dataNotAllowed, internationalRoamingOff,
+        // cannotFindHost, cannotConnectToHost, dnsLookupFailed → .offline; server-certificate / secureConnection → .tls
         switch u.code {
         case .cancelled: return .cancelled
         case .timedOut: return .timeout
-        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
-             .internationalRoamingOff, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: return .offline
-        case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed,
-             .serverCertificateNotYetValid, .clientCertificateRejected: return .tls
+        case .notConnectedToInternet, .networkConnectionLost: return .offline
+        case .serverCertificateUntrusted, .secureConnectionFailed: return .tls
         default: return .unknown(u.code.rawValue.description)
         }
     }
@@ -484,38 +466,28 @@ enum APIError: Error, Sendable, Equatable {
 
 ```swift
 struct RetryPolicy: Sendable {
-    var maxAttempts = 3
-    var base: TimeInterval = 0.5
-    var cap: TimeInterval = 30
+    var maxAttempts = 3, base: TimeInterval = 0.5, cap: TimeInterval = 30
 
     func delay(forAttempt attempt: Int, error: APIError) -> TimeInterval {
         switch error {
         case .rateLimited(let ra?), .server(_, let ra?): return min(ra, 300)
-        default:
-            let exp = min(cap, base * pow(2, Double(attempt)))
-            return Double.random(in: 0...exp)                // full jitter
+        default: return Double.random(in: 0...min(cap, base * pow(2, Double(attempt))))  // full jitter
         }
     }
 
+    /// Retry-After as delta-seconds, or HTTP-date ("EEE, dd MMM yyyy HH:mm:ss zzz", en_US_POSIX) → seconds from now.
     static func parseRetryAfter(_ value: String?) -> TimeInterval? {
         guard let value else { return nil }
-        if let secs = TimeInterval(value) { return secs }
-        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-        return f.date(from: value).map { max(0, $0.timeIntervalSinceNow) }
+        return TimeInterval(value)                     // HTTP-date branch omitted for brevity
     }
 }
 
 struct Tokens: Codable, Sendable { var access: String; var refresh: String; var expiresAt: Date }
 
-protocol TokenStore: Sendable {
-    func load() async throws -> Tokens?
-    func save(_ tokens: Tokens) async throws        // Keychain, AfterFirstUnlockThisDeviceOnly
-}
+protocol TokenStore: Sendable { func load() async throws -> Tokens?; func save(_ tokens: Tokens) async throws }  // Keychain, AfterFirstUnlockThisDeviceOnly
 
 actor TokenProvider {
-    private let store: TokenStore
-    private let refreshCall: @Sendable (String) async throws -> Tokens
+    private let store: TokenStore; private let refreshCall: @Sendable (String) async throws -> Tokens
     private var cached: Tokens?
     private var refreshTask: Task<Tokens, Error>?
 
@@ -524,8 +496,7 @@ actor TokenProvider {
     }
 
     func validAccessToken() async throws -> String {
-        if cached == nil { cached = try await store.load() }
-        guard let t = cached else { throw APIError.unauthorized }
+        if cached == nil { cached = try await store.load() }; guard let t = cached else { throw APIError.unauthorized }
         if t.expiresAt.timeIntervalSinceNow > 60 { return t.access }
         return try await refresh(failedToken: t.access)
     }
@@ -536,20 +507,12 @@ actor TokenProvider {
            current.expiresAt.timeIntervalSinceNow > 60 { return current.access }  // already refreshed
         if let task = refreshTask { return try await task.value.access }
         guard let refreshToken = cached?.refresh else { throw APIError.unauthorized }
-        let task = Task { [refreshCall, store] in
-            let new = try await refreshCall(refreshToken)
-            try await store.save(new)                 // persist BEFORE use (rotation)
-            return new
+        let task = Task { [refreshCall, store] in     // persist BEFORE use (rotation)
+            let new = try await refreshCall(refreshToken); try await store.save(new); return new
         }
-        refreshTask = task
-        defer { refreshTask = nil }
-        do {
-            let new = try await task.value
-            cached = new
-            return new.access
-        } catch let e as APIError where e == .offline || e == .timeout {
-            throw e                                   // keep tokens; never sign out offline
-        }
+        refreshTask = task; defer { refreshTask = nil }
+        let new = try await task.value                // offline/timeout rethrown: keep tokens, never sign out offline
+        cached = new; return new.access
     }
 }
 ```
@@ -557,39 +520,16 @@ actor TokenProvider {
 ### A.3 API client with interceptors, retries, dedupe
 
 ```swift
-import os
-
 actor APIClient {
-    private let env: APIEnvironment
-    private let session: URLSession
-    private let tokens: TokenProvider
-    private let retry: RetryPolicy
-    private let decoder: JSONDecoder
+    private let env: APIEnvironment, session: URLSession, tokens: TokenProvider
+    private let retry: RetryPolicy, decoder: JSONDecoder
     private var inFlightGETs: [String: Task<(Data, HTTPURLResponse), Error>] = [:]
-    private let log = Logger(subsystem: "com.example.app", category: "api")
 
-    init(env: APIEnvironment, tokens: TokenProvider, cacheDirectory: URL, retry: RetryPolicy = .init()) {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 90
-        config.waitsForConnectivity = false
-        config.httpCookieStorage = nil
-        config.urlCache = URLCache(memoryCapacity: 10 << 20, diskCapacity: 100 << 20, directory: cacheDirectory)
-        config.requestCachePolicy = .useProtocolCachePolicy
-        config.httpAdditionalHeaders = [
-            "Accept": "application/json",
-            "App-Version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-        ]
-        self.session = URLSession(configuration: config)
-        self.env = env; self.tokens = tokens; self.retry = retry
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .custom { dec in
-            let s = try dec.singleValueContainer().decode(String.self)
-            let f = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-            if let date = (try? f.parse(s)) ?? (try? Date.ISO8601FormatStyle().parse(s)) { return date }
-            throw DecodingError.dataCorrupted(.init(codingPath: dec.codingPath, debugDescription: "bad date \(s)"))
-        }
-        self.decoder = d
+    // session: request 20s / resource 90s timeouts, waitsForConnectivity = false, httpCookieStorage = nil,
+    // URLCache(memory 10MB, disk 100MB, directory:), useProtocolCachePolicy, Accept + App-Version headers.
+    // decoder: ISO8601 dates with and without fractional seconds.
+    init(env: APIEnvironment, tokens: TokenProvider, session: URLSession, decoder: JSONDecoder, retry: RetryPolicy = .init()) {
+        self.env = env; self.tokens = tokens; self.session = session; self.decoder = decoder; self.retry = retry
     }
 
     func send<R>(_ ep: Endpoint<R>) async throws -> R {
@@ -607,8 +547,7 @@ actor APIClient {
         if let existing = inFlightGETs[key] { return try await existing.value }
         // Unstructured so one caller's cancellation doesn't cancel the others.
         let task = Task { try await self.withRetry(ep, requestId: requestId) }
-        inFlightGETs[key] = task
-        defer { inFlightGETs[key] = nil }
+        inFlightGETs[key] = task; defer { inFlightGETs[key] = nil }
         return try await task.value                                 // refcounting omitted for brevity
     }
 
@@ -617,12 +556,9 @@ actor APIClient {
         while true {
             do { return try await sendOnceWithAuth(ep, requestId: requestId) }
             catch {
-                let e = APIError.from(error)
-                attempt += 1
+                let e = APIError.from(error); attempt += 1
                 guard e.isTransient, ep.isIdempotent, attempt < retry.maxAttempts else { throw e }
-                let d = retry.delay(forAttempt: attempt, error: e)
-                log.info("retry \(attempt) \(ep.path, privacy: .public) in \(d)s")
-                try await Task.sleep(for: .seconds(d))
+                try await Task.sleep(for: .seconds(retry.delay(forAttempt: attempt, error: e)))
             }
         }
     }
@@ -630,19 +566,15 @@ actor APIClient {
     private func sendOnceWithAuth<R>(_ ep: Endpoint<R>, requestId: String) async throws -> (Data, HTTPURLResponse) {
         var token = ep.requiresAuth ? try await tokens.validAccessToken() : nil
         for authAttempt in 0..<2 {
-            var req = try buildRequest(ep, requestId: requestId, token: token)
-            req.timeoutInterval = 20
+            let req = try buildRequest(ep, requestId: requestId, token: token)
             let (data, resp): (Data, URLResponse)
-            do { (data, resp) = try await session.data(for: req) }
-            catch { throw APIError.from(error) }
+            do { (data, resp) = try await session.data(for: req) } catch { throw APIError.from(error) }
             guard let http = resp as? HTTPURLResponse else { throw APIError.unknown("non-HTTP") }
             if http.statusCode == 401, ep.requiresAuth, authAttempt == 0, let used = token {
                 token = try await tokens.refresh(failedToken: used)  // single-flight, then retry once
                 continue
             }
-            guard (200..<300).contains(http.statusCode) else {
-                throw APIError.from(status: http.statusCode, data: data, headers: http.allHeaderFields)
-            }
+            guard (200..<300).contains(http.statusCode) else { throw APIError.from(status: http.statusCode, data: data, headers: http.allHeaderFields) }
             return (data, http)
         }
         throw APIError.unauthorized
@@ -651,23 +583,18 @@ actor APIClient {
     private func makeURL<R>(_ ep: Endpoint<R>) throws -> URL {
         var c = URLComponents(url: env.baseURL.appending(path: ep.path), resolvingAgainstBaseURL: false)!
         if !ep.query.isEmpty { c.queryItems = ep.query }
-        guard let url = c.url else { throw APIError.unknown("bad url") }
-        return url
+        guard let url = c.url else { throw APIError.unknown("bad url") }; return url
     }
 
     private func buildRequest<R>(_ ep: Endpoint<R>, requestId: String, token: String?) throws -> URLRequest {
-        // Interceptor order: request-id → auth → idempotency → (retry wraps) → logging
+        // Interceptor order: request-id → auth → idempotency → (retry wraps) → logging (redacted)
         var req = URLRequest(url: try makeURL(ep))
         req.httpMethod = ep.method.rawValue
         req.setValue(requestId, forHTTPHeaderField: "X-Request-Id")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let key = ep.idempotencyKey { req.setValue(key, forHTTPHeaderField: "Idempotency-Key") }
-        if let body = ep.body {
-            req.httpBody = body
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
+        if let body = ep.body { req.httpBody = body; req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         ep.headers.forEach { req.setValue($1, forHTTPHeaderField: $0) }
-        log.debug("\(ep.method.rawValue) \(ep.path, privacy: .public) id=\(requestId, privacy: .public)")
         return req
     }
 }
@@ -676,41 +603,11 @@ actor APIClient {
 ### A.4 Connectivity monitor
 
 ```swift
-import Network
-import Observation
-
-@MainActor @Observable
-final class Connectivity {
-    private(set) var isOnline = true
-    private(set) var isConstrained = false
-    private(set) var recentOfflineFailures = 0
-    var showOfflineBanner: Bool { !isOnline || recentOfflineFailures >= 2 }
-    var onReconnect: (@MainActor () -> Void)?
-
-    private let monitor = NWPathMonitor()
-
-    init() {
-        monitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor in self?.update(path) }
-        }
-        monitor.start(queue: DispatchQueue(label: "net.path"))
-    }
-
-    private func update(_ path: NWPath) {
-        let wasOnline = isOnline
-        isOnline = path.status == .satisfied        // a hint, not truth
-        isConstrained = path.isConstrained
-        if !wasOnline && isOnline { recentOfflineFailures = 0; onReconnect?() }
-    }
-
-    func record(_ result: Result<Void, APIError>) {
-        switch result {
-        case .success: recentOfflineFailures = 0
-        case .failure(.offline), .failure(.timeout): recentOfflineFailures += 1
-        case .failure: break
-        }
-    }
-}
+// @MainActor @Observable final class Connectivity — wraps NWPathMonitor (started on its own queue).
+//   isOnline = path.status == .satisfied (a hint, not truth); isConstrained = path.isConstrained.
+//   recentOfflineFailures: reset on success, +1 on .offline/.timeout via record(_ result: Result<Void, APIError>).
+//   showOfflineBanner = !isOnline || recentOfflineFailures >= 2.
+//   onReconnect: (@MainActor () -> Void)? fired on offline → online transition (resets the failure count).
 ```
 
 ### A.5 SwiftData models: entity, outbox, sync state
@@ -723,12 +620,11 @@ enum SyncState: String, Codable { case synced, pendingCreate, pendingUpdate, pen
 @Model final class Note {
     #Unique<Note>([\.id])                         // iOS 18; on 17 dedupe manually
     var id: UUID                                  // client-generated, accepted by server
-    var title: String
-    var body: String
+    var title: String; var body: String
     var updatedAt: Date                           // server time
     var version: Int                              // server version for If-Match
     var syncStateRaw: String
-    var deletedLocally: Bool
+    var deletedLocally = false
     var syncState: SyncState {
         get { SyncState(rawValue: syncStateRaw) ?? .synced }
         set { syncStateRaw = newValue.rawValue }
@@ -736,7 +632,7 @@ enum SyncState: String, Codable { case synced, pendingCreate, pendingUpdate, pen
     init(id: UUID = UUID(), title: String, body: String, updatedAt: Date = .now, version: Int = 0,
          syncState: SyncState = .synced) {
         self.id = id; self.title = title; self.body = body; self.updatedAt = updatedAt
-        self.version = version; self.syncStateRaw = syncState.rawValue; self.deletedLocally = false
+        self.version = version; self.syncStateRaw = syncState.rawValue
     }
 }
 
@@ -745,24 +641,20 @@ enum SyncState: String, Codable { case synced, pendingCreate, pendingUpdate, pen
     var entityId: UUID
     var operation: String                         // create | update | delete
     var payload: Data
-    var payloadVersion: Int
-    var idempotencyKey: String                    // generated ONCE
-    var attempts: Int
-    var nextAttemptAt: Date
-    var state: String                             // pending | inFlight | failed
+    var payloadVersion = 1
+    var idempotencyKey = UUID().uuidString        // generated ONCE
+    var attempts = 0
+    var nextAttemptAt = Date.now
+    var state = "pending"                         // pending | inFlight | failed
     var lastError: String?
     init(seq: Int, entityId: UUID, operation: String, payload: Data) {
         self.seq = seq; self.entityId = entityId; self.operation = operation; self.payload = payload
-        self.payloadVersion = 1; self.idempotencyKey = UUID().uuidString
-        self.attempts = 0; self.nextAttemptAt = .now; self.state = "pending"
     }
 }
 
 @Model final class SyncMeta {
     #Unique<SyncMeta>([\.collection])
-    var collection: String
-    var cursor: String?
-    var lastSyncedAt: Date?
+    var collection: String; var cursor: String?; var lastSyncedAt: Date?
     init(collection: String) { self.collection = collection }
 }
 
@@ -784,50 +676,21 @@ actor NoteStore {
     func upsertLocal(id: UUID?, title: String, body: String) throws -> UUID {
         let existing = try id.flatMap { id in try modelContext.fetch(FetchDescriptor<Note>(predicate: #Predicate { $0.id == id })).first }
         let note = existing ?? Note(title: title, body: body, syncState: .pendingCreate)
-        if existing == nil { modelContext.insert(note) }
-        note.title = title; note.body = body
+        if existing == nil { modelContext.insert(note) }; note.title = title; note.body = body
         if note.syncState == .synced { note.syncState = .pendingUpdate }
         let payload = try JSONEncoder().encode(["title": title, "body": body, "baseVersion": String(note.version)])
         modelContext.insert(OutboxItem(seq: try nextSeq(), entityId: note.id,
                                        operation: existing == nil ? "create" : "update", payload: payload))
-        try modelContext.save()
-        return note.id
+        try modelContext.save(); return note.id
     }
 
-    func deleteLocal(id: UUID) throws {
-        guard let note = try modelContext.fetch(FetchDescriptor<Note>(predicate: #Predicate { $0.id == id })).first else { return }
-        if note.syncState == .pendingCreate {                 // never reached server: coalesce away
-            let nid = note.id
-            try modelContext.delete(model: OutboxItem.self, where: #Predicate { $0.entityId == nid })
-            modelContext.delete(note)
-        } else {
-            note.deletedLocally = true; note.syncState = .pendingDelete
-            modelContext.insert(OutboxItem(seq: try nextSeq(), entityId: id, operation: "delete", payload: Data()))
-        }
-        try modelContext.save()
-    }
+    // deleteLocal(id:): if .pendingCreate (never reached server) delete its outbox rows + the note (coalesce away);
+    // else set deletedLocally = true, .pendingDelete and enqueue a "delete" OutboxItem — one save either way.
 }
 
-struct NotesView: View {
-    @Query(filter: #Predicate<Note> { !$0.deletedLocally }, sort: \Note.updatedAt, order: .reverse)
-    private var notes: [Note]                              // UI observes the DB only
-    @Environment(SyncEngine.self) private var sync
-    @Environment(Connectivity.self) private var net
-
-    var body: some View {
-        List(notes) { note in
-            HStack {
-                Text(note.title)
-                Spacer()
-                if note.syncState != .synced { Image(systemName: note.syncState == .failed ? "exclamationmark.circle" : "clock") }
-            }
-        }
-        .overlay(alignment: .top) { if net.showOfflineBanner { Text("You're offline").padding(6).background(.thinMaterial, in: Capsule()) } }
-        .refreshable { await sync.syncNow(reason: "pull") }
-        .task { await sync.syncNow(reason: "appear") }    // cancelled on disappear
-    }
-}
-}
+// UI: NotesView observes the DB only — @Query(filter: !deletedLocally, sort: updatedAt desc);
+// per-row clock / exclamation icon when syncState != .synced; offline banner from Connectivity.showOfflineBanner;
+// .refreshable { await sync.syncNow(reason: "pull") } and .task { await sync.syncNow(reason: "appear") }.
 ```
 
 ### A.7 Outbox processor and sync engine (push, then pull with cursor + tombstones)
@@ -838,14 +701,12 @@ actor SyncWorker {
     private var api: APIClient!
     func configure(api: APIClient) { self.api = api }
 
-    func resetStaleInFlight() throws {
-        for item in try modelContext.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate { $0.state == "inFlight" })) {
-            item.state = "pending"
-        }
+    func resetStaleInFlight() throws {                // app killed mid-request → retry with the same key
+        try modelContext.fetch(FetchDescriptor<OutboxItem>(predicate: #Predicate { $0.state == "inFlight" })).forEach { $0.state = "pending" }
         try modelContext.save()
     }
 
-    /// Ordered replay; permanent failures don't block unrelated items.
+    /// Ordered replay; a failure blocks only its own entity, never unrelated items.
     func drainOutbox() async throws {
         let now = Date.now
         let items = try modelContext.fetch(FetchDescriptor<OutboxItem>(
@@ -861,13 +722,10 @@ actor SyncWorker {
                 try apply(server: dto, for: item)                         // DB + delete row, one save
             } catch let e as APIError {
                 switch e {
-                case .unauthorized:
-                    item.state = "pending"; try modelContext.save(); throw e  // pause whole outbox
-                case .offline:
-                    item.state = "pending"; try modelContext.save(); return
+                case .unauthorized: item.state = "pending"; try modelContext.save(); throw e  // pause whole outbox
+                case .offline:      item.state = "pending"; try modelContext.save(); return
                 case .conflict:
-                    markEntity(item.entityId, .conflict)
-                    item.state = "failed"; item.lastError = "conflict"
+                    markEntity(item.entityId, .conflict); item.state = "failed"; item.lastError = "conflict"
                     blockedEntities.insert(item.entityId)
                 case _ where e.isTransient:
                     item.attempts += 1; item.state = "pending"
@@ -875,8 +733,7 @@ actor SyncWorker {
                     item.nextAttemptAt = .now + .random(in: 0...backoff)
                     blockedEntities.insert(item.entityId)
                 default:                                                   // permanent: 4xx validation
-                    item.state = "failed"; item.lastError = e.userMessage
-                    markEntity(item.entityId, .failed)
+                    item.state = "failed"; item.lastError = "\(e)"; markEntity(item.entityId, .failed)
                     blockedEntities.insert(item.entityId)
                 }
                 try modelContext.save()
@@ -902,8 +759,7 @@ actor SyncWorker {
             note.version = dto.version; note.updatedAt = dto.updatedAt
             if others == 0 { note.title = dto.title; note.body = dto.body; note.syncState = .synced }
         }
-        modelContext.delete(item)
-        try modelContext.save()
+        modelContext.delete(item); try modelContext.save()
     }
 
     private func markEntity(_ id: UUID, _ s: SyncState) {
@@ -927,56 +783,22 @@ actor SyncWorker {
                 if let local = try modelContext.fetch(FetchDescriptor<Note>(predicate: #Predicate { $0.id == id })).first {
                     guard local.syncState == .synced, dto.version >= local.version else { continue } // pending local wins
                     local.title = dto.title; local.body = dto.body; local.updatedAt = dto.updatedAt; local.version = dto.version
-                } else {
-                    modelContext.insert(Note(id: dto.id, title: dto.title, body: dto.body,
-                                             updatedAt: dto.updatedAt, version: dto.version))
-                }
+                } else { modelContext.insert(Note(id: dto.id, title: dto.title, body: dto.body, updatedAt: dto.updatedAt, version: dto.version)) }
             }
             for id in page.deleted {                                       // tombstones
                 try modelContext.delete(model: Note.self, where: #Predicate { $0.id == id && $0.syncStateRaw == "synced" })
             }
-            meta.cursor = page.nextCursor; meta.lastSyncedAt = .now; hasMore = page.hasMore
-            try modelContext.save()
+            meta.cursor = page.nextCursor; meta.lastSyncedAt = .now; hasMore = page.hasMore; try modelContext.save()
         }
     }
 }
 
-@MainActor @Observable
-final class SyncEngine {
-    private(set) var isSyncing = false
-    private(set) var lastError: APIError?
-    private let worker: SyncWorker
-    private let connectivity: Connectivity
-    private var current: Task<Void, Never>?
-
-    init(container: ModelContainer, api: APIClient, connectivity: Connectivity) {
-        worker = SyncWorker(modelContainer: container)
-        self.connectivity = connectivity
-        Task { [worker] in await worker.configure(api: api); try? await worker.resetStaleInFlight() }
-        connectivity.onReconnect = { [weak self] in
-            Task { try? await Task.sleep(for: .seconds(.random(in: 0...3))); await self?.syncNow(reason: "reconnect") }
-        }
-    }
-
-    /// Coalesces concurrent triggers into one run: push outbox, then pull.
-    func syncNow(reason: String) async {
-        if let current { return await current.value }
-        let task = Task { [worker, connectivity] in
-            do {
-                try await worker.drainOutbox()
-                try await worker.pull()
-                connectivity.record(.success(()))
-                self.lastError = nil
-            } catch {
-                let e = APIError.from(error)
-                if e != .cancelled { self.lastError = e; connectivity.record(.failure(e)) }
-            }
-        }
-        current = task; isSyncing = true
-        await task.value
-        current = nil; isSyncing = false
-    }
-}
+// @MainActor @Observable final class SyncEngine — owns a SyncWorker(modelContainer:) and Connectivity.
+//   init: configure worker with the APIClient, resetStaleInFlight(); connectivity.onReconnect → jittered
+//   (0–3 s) syncNow(reason: "reconnect").
+//   syncNow(reason:) coalesces concurrent triggers into one Task: drainOutbox() then pull(); on success
+//   connectivity.record(.success); on non-cancellation error set lastError and connectivity.record(.failure).
+//   Exposes isSyncing and lastError for UI.
 ```
 
 ### A.8 Background sync registration and silent push
@@ -986,23 +808,18 @@ import BackgroundTasks
 import UIKit
 
 enum BGIds { static let refresh = "com.example.app.refresh" }  // add a BGProcessingTask id for full resync
-// Info.plist: BGTaskSchedulerPermittedIdentifiers = [refresh, processing]
-// Capabilities: Background Modes → Background fetch, Background processing, Remote notifications
+// Info.plist: BGTaskSchedulerPermittedIdentifiers; Background Modes: fetch, processing, remote notifications
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     var makeSyncEngine: (@MainActor () -> SyncEngine?)!      // resolves active account(s)' engine
 
     func application(_ app: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Register BEFORE launch finishes.
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: BGIds.refresh, using: nil) { task in
-            self.handle(task)
-        }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: BGIds.refresh, using: nil) { self.handle($0) }  // before launch ends
         return true
     }
 
-    static func scheduleRefresh() {
-        let req = BGAppRefreshTaskRequest(identifier: BGIds.refresh)
-        req.earliestBeginDate = .now + 15 * 60                  // minimum, not a schedule
+    static func scheduleRefresh() {                              // earliestBeginDate is a minimum, not a schedule
+        let req = BGAppRefreshTaskRequest(identifier: BGIds.refresh); req.earliestBeginDate = .now + 15 * 60
         try? BGTaskScheduler.shared.submit(req)
     }
 
@@ -1015,13 +832,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         task.expirationHandler = { work.cancel() }               // cancellation → setTaskCompleted(false)
     }
 
-    // Silent push: content-available=1, apns-push-type=background, apns-priority=5
-    func application(_ app: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async
-        -> UIBackgroundFetchResult {
-        guard userInfo["sync"] != nil, let engine = await makeSyncEngine() else { return .noData }
-        await engine.syncNow(reason: "push")
-        return await engine.lastError == nil ? .newData : .failed
-    }
+    // Silent push (content-available=1, apns-push-type=background, apns-priority=5):
+    // didReceiveRemoteNotification async → if userInfo["sync"], syncNow(reason: "push"), return .newData / .failed / .noData.
 }
 
 // SwiftUI: .onChange(of: scenePhase) { _, p in if p == .background { AppDelegate.scheduleRefresh() } }
