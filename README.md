@@ -19,6 +19,8 @@ flutter/           Dart · Flutter
 | List UX | [ios-list-ux](ios-native/ios-list-ux/SKILL.md) | [android-list-ux](android-native/android-list-ux/SKILL.md) | [react-native-list-ux](react-native/react-native-list-ux/SKILL.md) | [flutter-list-ux](flutter/flutter-list-ux/SKILL.md) |
 | Deep links | [ios-deep-links](ios-native/ios-deep-links/SKILL.md) | [android-deep-links](android-native/android-deep-links/SKILL.md) | [react-native-deep-links](react-native/react-native-deep-links/SKILL.md) | [flutter-deep-links](flutter/flutter-deep-links/SKILL.md) |
 | Multi-account & portals | [ios-multi-account](ios-native/ios-multi-account/SKILL.md) | [android-multi-account](android-native/android-multi-account/SKILL.md) | [react-native-multi-account](react-native/react-native-multi-account/SKILL.md) | [flutter-multi-account](flutter/flutter-multi-account/SKILL.md) |
+| Crash reporting & analytics | [ios-crash-analytics](ios-native/ios-crash-analytics/SKILL.md) | [android-crash-analytics](android-native/android-crash-analytics/SKILL.md) | [react-native-crash-analytics](react-native/react-native-crash-analytics/SKILL.md) | [flutter-crash-analytics](flutter/flutter-crash-analytics/SKILL.md) |
+| Networking & offline sync | [ios-network-offline-sync](ios-native/ios-network-offline-sync/SKILL.md) | [android-network-offline-sync](android-native/android-network-offline-sync/SKILL.md) | [react-native-network-offline-sync](react-native/react-native-network-offline-sync/SKILL.md) | [flutter-network-offline-sync](flutter/flutter-network-offline-sync/SKILL.md) |
 
 ### What each area covers
 
@@ -28,6 +30,8 @@ flutter/           Dart · Flutter
 - **List UX** — batch data loading, load more / infinite scroll, shimmer loader for primary lists and a plain spinner for secondary lists and load-more, swipe actions, pull to refresh, empty/error/offline states, thumbnail caching, optimistic updates, performance, search/filter, selection, sticky headers, scroll restoration, accessibility.
 - **Deep links** — universal links / App Links and their verification files, custom schemes, URL design, routing across cold/warm starts, pending links through login, vendor-neutral deferred deep links, entry points (push, widgets, QR, OAuth), fallbacks, security, testing.
 - **Multi-account & portals** — several signed-in accounts per device, each with several portals (workspaces/organizations): secure per-account tokens, data isolation, account and portal switching, push and deep-link routing to the right account + portal, purchases, sign-out and cleanup.
+- **Crash reporting & analytics** — crash capture and symbolication, breadcrumbs, typed event catalogue, identity across account switches, analytics consent asked once at first login and stored per device (survives logout/login), delivery, performance monitoring — Crashlytics and Sentry behind a vendor-neutral facade.
+- **Networking & offline sync** — configured HTTP client, auth refresh, typed errors, retries with backoff, caching, connectivity, local DB as source of truth, outbox for offline writes, delta sync with tombstones, conflict resolution, background sync, realtime, large transfers, GraphQL notes.
 
 ## Conventions
 
