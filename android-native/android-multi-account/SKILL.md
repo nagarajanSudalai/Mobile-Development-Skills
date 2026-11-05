@@ -723,6 +723,7 @@ class SessionManager @Inject constructor(
 
     /** Cold start: finish pending removals, then activate activeAccountId ?? most recently used, else NoAccounts. */
     suspend fun restore(): Unit = TODO()
+
     suspend fun switchAccount(accountId: String, portalId: String? = null) = mutex.withLock {
         if ((state.value as? SessionState.Active)?.account?.id == accountId) {
             if (portalId != null) switchPortalLocked(portalId); return@withLock
