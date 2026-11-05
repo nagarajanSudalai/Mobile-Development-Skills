@@ -1,28 +1,30 @@
 ---
-name: cross-platform-revenuecat-iap
-description: Use when implementing, reviewing, testing, or debugging in-app purchases or subscriptions built on RevenueCat in Flutter (purchases_flutter, purchases_ui_flutter) or React Native / Expo (react-native-purchases, react-native-purchases-ui) — one RevenueCat project for App Store + Google Play (+ web), platform API keys, shared entitlements and offerings, paywalls, Customer Center, identity across platforms, Android plan changes, iOS offers, webhooks, migration from native plugins, testing. For native iOS/Android apps use ios-revenuecat-iap / android-revenuecat-iap; without RevenueCat use cross-platform-in-app-purchase.
+name: react-native-revenuecat-iap
+description: Use when implementing, reviewing, testing, or debugging in-app purchases or subscriptions built on RevenueCat in a React Native or Expo app (react-native-purchases, react-native-purchases-ui) — bare RN and Expo dev builds, one RevenueCat project for App Store + Google Play (+ web), platform API keys, shared entitlements and offerings, paywalls, Customer Center, identity across platforms, Android plan changes, iOS offers, webhooks, migration from react-native-iap / expo-iap, testing. For native iOS/Android apps use ios-revenuecat-iap / android-revenuecat-iap; for React Native without RevenueCat use react-native-in-app-purchase; for Flutter use flutter-revenuecat-iap.
 ---
 
-# Cross-Platform In-App Purchases with RevenueCat (Flutter & React Native)
+# React Native & Expo In-App Purchases with RevenueCat
 
-Guide for building, auditing, and testing purchases in **Flutter** (`purchases_flutter`, `purchases_ui_flutter`) and **React Native / Expo** (`react-native-purchases`, `react-native-purchases-ui`) apps on RevenueCat. These SDKs wrap the native RevenueCat iOS and Android SDKs, so RevenueCat handles store verification, finishing/acknowledging, notifications, and cross-device entitlement sync on both stores. **You still own**: both store consoles, the shared entitlement design, user identity, platform differences in the UI (plan changes, offers, manage links), consumable balances, and store-policy compliance.
+Guide for building, auditing, and testing purchases in **React Native / Expo** apps (`react-native-purchases`, `react-native-purchases-ui`) on RevenueCat. The SDK wraps the native RevenueCat iOS and Android SDKs, so RevenueCat handles store verification, finishing/acknowledging, notifications, and cross-device entitlement sync on both stores. **You still own**: both store consoles, the shared entitlement design, user identity, platform differences in the UI (plan changes, offers, manage links), consumable balances, and store-policy compliance.
 
 Platform skills hold the store- and SDK-specific detail — this skill links to them instead of repeating it:
 - **ios-revenuecat-iap** — dashboard setup for the App Store app, iOS offers, field mapping, webhooks (§9 event table)
 - **android-revenuecat-iap** — Play service credentials, RTDN, subscription options/offer tags, Google replacement modes
 - **ios-in-app-purchase** / **android-in-app-purchase** — store rules, App Review / Play policy, post-purchase UI
+- **react-native-in-app-purchase** — React Native / Expo purchases without RevenueCat (`react-native-iap`, `expo-iap`)
+- **flutter-revenuecat-iap** — the same RevenueCat setup for Flutter
 
-Hybrid SDK APIs track the native SDKs but rename things between majors (e.g. purchase methods returning `CustomerInfo` vs a result object, proration vs replacement mode naming). Verify every call against the version in `pubspec.yaml` / `package.json` and its migration guide.
+Hybrid SDK APIs track the native SDKs but rename things between majors (e.g. purchase methods returning `CustomerInfo` vs a result object, proration vs replacement mode naming). Verify every call against the version in `package.json` and its migration guide.
 
 ## 0. Architecture (mental model)
 
 ```
 +-------------------------------------------------------------+
-| Shared UI (Flutter widgets / React components)              |
+| Shared UI (React components)                                |
 | RevenueCatUI Paywall or custom paywall, status card,        |
 | Customer Center, Restore                                    |
 +-------------------------------------------------------------+
-            ^ state (Riverpod/Bloc/Provider · Zustand/Redux/context)
+            ^ state (Zustand/Redux/context)
 +-------------------------------------------------------------+
 | SubscriptionService (singleton, configured at app start)    |
 | - Purchases.configure(platform API key, appUserID)          |
@@ -31,7 +33,7 @@ Hybrid SDK APIs track the native SDKs but rename things between majors (e.g. pur
 | - platform branches: Android plan change, iOS promo offers, |
 |   manage location by store                                  |
 +-------------------------------------------------------------+
-     | purchases_flutter / react-native-purchases (bridges)
+     | react-native-purchases (native module bridge)
      v
 +--------------------------+     +-----------------------------+
 | RevenueCat iOS SDK       |     | RevenueCat Android SDK      |
@@ -46,15 +48,15 @@ Hybrid SDK APIs track the native SDKs but rename things between majors (e.g. pur
 +-------------------------------------------------------------+
 ```
 
-Concepts (same as the native RevenueCat skills): **Product** (per store) → attached to **Entitlements** (shared) → shown through **Offerings/Packages** (shared identifiers, store-specific products). Code gates on **entitlement IDs** only, so the same Dart/TS code works on both platforms.
+Concepts (same as the native RevenueCat skills): **Product** (per store) → attached to **Entitlements** (shared) → shown through **Offerings/Packages** (shared identifiers, store-specific products). Code gates on **entitlement IDs** only, so the same TS code works on both platforms.
 
 ## 1. First, establish context
 
 Find out (from the codebase or by asking):
 
-- Framework and SDK **exact versions** (`purchases_flutter`, `purchases_ui_flutter`, `react-native-purchases`, `react-native-purchases-ui`); Expo managed vs bare
-- Platforms: iOS, Android, and maybe **web** (RevenueCat Web Billing / Stripe via `purchases-js`) or macOS
-- **Who completes purchases**: RevenueCat (default) or an existing plugin like `in_app_purchase` / `react-native-iap` (section 11)
+- SDK **exact versions** (`react-native-purchases`, `react-native-purchases-ui`); React Native version; **Expo managed vs bare** (and Expo SDK version)
+- Platforms: iOS, Android, and maybe **web** (RevenueCat Web Billing / Stripe via `purchases-js`, e.g. for an Expo web target) or macOS
+- **Who completes purchases**: RevenueCat (default) or an existing plugin like `react-native-iap` / `expo-iap` (section 11)
 - Account system: anonymous only, or your own user IDs (`logIn`) — required for sharing entitlements across platforms
 - Paywall: RevenueCatUI (remote, both platforms) or custom
 - Backend that needs purchase state? (webhooks + REST API)
@@ -88,11 +90,11 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 
 ## 3. SDK setup checklist
 
-- [ ] `Purchases.configure(...)` **once**, at app start, with the **platform's** API key (`Platform.isIOS ? appleKey : googleKey` / `Platform.select({ ios, android })`) — before any other Purchases call
-- [ ] Debug log level only in debug builds
+- [ ] `Purchases.configure(...)` **once**, at app start (root layout / `App.tsx`), with the **platform's** API key (`Platform.select({ ios, android })`) — before any other Purchases call
+- [ ] Debug log level only in debug builds (`__DEV__`)
 - [ ] `appUserID` passed at configure time if already signed in
 - [ ] One **customer-info listener** for the app's lifetime (`Purchases.addCustomerInfoUpdateListener`) feeding your state store; remove it only on teardown
-- [ ] iOS: In-App Purchase capability in `ios/Runner` / `ios/<App>`; `pod install` after upgrades. Android: `minSdk` per SDK requirement; `MainActivity` extends `FlutterFragmentActivity` (Flutter, needed by RevenueCatUI) / React Native activity setup per docs
+- [ ] iOS: In-App Purchase capability in `ios/<App>`; `pod install` after upgrades (bare). Android: `minSdk` per SDK requirement; React Native activity setup per docs
 - [ ] **Expo**: install via `npx expo install`, use a **development build** (EAS / prebuild). Expo Go can't make real purchases (recent SDK versions run a preview/mock mode there — never test purchase logic in Expo Go)
 - [ ] No other purchase plugin listening to and finishing transactions at the same time (unless section 11)
 
@@ -100,17 +102,17 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 
 - [ ] `getOfferings()` → `current`; handle `null` / empty packages with a retry state (wrong key for platform, products not attached for this platform, Play credentials not active yet)
 - [ ] Packages by **type/identifier**, never by index — the same code then works on iOS and Android
-- [ ] Prices from `package.storeProduct.priceString` (and `pricePerMonthString` etc. where available)
-- [ ] Trial/intro text: iOS via `checkTrialOrIntroductoryPriceEligibility` + `introductoryPrice`; Android via the product's default subscription option / `subscriptionOptions` (Play only returns eligible offers) — or let RevenueCatUI handle it
+- [ ] Prices from `package.product.priceString` (and `pricePerMonthString` etc. where available)
+- [ ] Trial/intro text: iOS via `checkTrialOrIntroductoryPriceEligibility` + `introPrice`; Android via the product's default subscription option / `subscriptionOptions` (Play only returns eligible offers) — or let RevenueCatUI handle it
 - [ ] Offering metadata for copy, with defaults
-- [ ] RevenueCatUI: Flutter `RevenueCatUI.presentPaywallIfNeeded("pro")` / `PaywallView`; RN `RevenueCatUI.presentPaywallIfNeeded({ requiredEntitlementIdentifier: "pro" })` / `<RevenueCatUI.Paywall />`. Handle result (purchased / restored / cancelled / error)
+- [ ] RevenueCatUI: `RevenueCatUI.presentPaywallIfNeeded({ requiredEntitlementIdentifier: "pro" })` / `<RevenueCatUI.Paywall />`. Handle result (purchased / restored / cancelled / error)
 - [ ] Paywall template shows Terms, Privacy, auto-renew disclosure, and works on both platforms' disclosure rules
 - [ ] Custom paywall: Current plan / Upgrade / Downgrade labels per ios-in-app-purchase §13.2 — remember the **Android plan-change branch** (section 6.1)
 
 ## 5. User identity (cross-platform)
 
 - [ ] Same **stable, non-PII App User ID** on every platform (your DB UUID) → the user's entitlement follows them from iPhone to Android to web
-- [ ] `logIn(userId)` right after sign-in and **before** showing the paywall; `logOut()` on sign-out (not when anonymous — check `isAnonymous`)
+- [ ] `logIn(userId)` right after sign-in and **before** showing the paywall; `logOut()` on sign-out (not when anonymous — check `isAnonymous()`)
 - [ ] Never email, device IDs, `""`, `"null"`, or constants as IDs
 - [ ] Anonymous-only apps can't share entitlements across platforms — tell the user if that's a requirement
 - [ ] Restore: `restorePurchases()`; empty result → "No previous purchases found"; restore under another App User ID follows the project's restore behavior (`TRANSFER` webhook)
@@ -118,10 +120,10 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 
 ## 6. Purchasing
 
-- [ ] `purchasePackage(pkg)` (or `purchase(PurchaseParams…)` on newer SDKs) → apply the returned `CustomerInfo` immediately
-- [ ] Cancellation → no alert: Flutter `PurchasesErrorHelper.getErrorCode(e) == PurchasesErrorCode.purchaseCancelledError` (from `PlatformException`); RN `e.userCancelled`
-- [ ] Pending (`paymentPendingError` / `PAYMENT_PENDING_ERROR`) → "Waiting for approval/payment"; result arrives through the listener
-- [ ] Network / store problems → retryable; `receiptAlreadyInUseError` (belongs to another App User ID), `productAlreadyPurchasedError`, `ineligibleError`, `purchaseNotAllowedError` → specific messages
+- [ ] `purchasePackage(pkg)` (or `purchase(…)` params on newer SDKs) → apply the returned `customerInfo` immediately
+- [ ] Cancellation → no alert: `e.userCancelled`
+- [ ] Pending (`PURCHASES_ERROR_CODE.PAYMENT_PENDING_ERROR`) → "Waiting for approval/payment"; result arrives through the listener
+- [ ] Network / store problems → retryable; `RECEIPT_ALREADY_IN_USE_ERROR` (belongs to another App User ID), `PRODUCT_ALREADY_PURCHASED_ERROR`, `INELIGIBLE_ERROR`, `PURCHASE_NOT_ALLOWED_ERROR` → specific messages
 - [ ] Purchase button disabled while in flight
 - [ ] Gate on **entitlements** in the returned/updated `CustomerInfo`
 - [ ] Add-ons only while the base entitlement is active
@@ -130,7 +132,7 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 ### 6.1 Plan changes — the platform branch
 | | iOS | Android |
 |---|---|---|
-| How | Normal `purchasePackage` of the other product in the same subscription group — StoreKit swaps | **Must** pass the current product + mode: Flutter `googleProductChangeInfo: GoogleProductChangeInfo(oldProductId, prorationMode: …)`; RN third argument `{ oldProductIdentifier, prorationMode }` (newer SDKs: replacement-mode naming) |
+| How | Normal `purchasePackage` of the other product in the same subscription group — StoreKit swaps | **Must** pass the current product + mode as the third argument: `{ oldProductIdentifier, prorationMode }` (newer SDKs: replacement-mode naming) |
 | Upgrade | Immediate | `IMMEDIATE_AND_CHARGE_PRORATED_PRICE` (or `IMMEDIATE_WITH_TIME_PRORATION`) |
 | Downgrade | At renewal | `DEFERRED` |
 | Forgetting it | — | User billed for **two** subscriptions |
@@ -149,9 +151,9 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 ## 7. Reading state for the UI
 
 - [ ] Map `CustomerInfo.entitlements` → app tiers in **one shared function** (Appendix) — not duplicated per platform
-- [ ] Field mapping per ios-revenuecat-iap §7.1: `isActive`, `productIdentifier` (+ `productPlanIdentifier` on Play), `expirationDate` (ISO string in the hybrid SDKs — parse it), `willRenew`, `periodType`, `billingIssueDetectedAt`, `store`, `isSandbox`
+- [ ] Field mapping per ios-revenuecat-iap §7.1: `isActive`, `productIdentifier` (+ `productPlanIdentifier` on Play), `expirationDate` (ISO string in the hybrid SDK — parse it), `willRenew`, `periodType`, `billingIssueDetectedAt`, `store`, `isSandbox`
 - [ ] **Manage**: `customerInfo.managementURL` points to the store the user paid on; or RevenueCatUI **Customer Center** (`RevenueCatUI.presentCustomerCenter()`); if `store` isn't the current platform's store, explain where to manage
-- [ ] Freshness: listener drives the UI; `getCustomerInfo()` on start/resume; cached values for offline
+- [ ] Freshness: listener drives the UI; `getCustomerInfo()` on start/resume (`AppState` → `active`); cached values for offline
 - [ ] Pending downgrades: remember the target locally at purchase time or use Customer Center / your backend (`PRODUCT_CHANGE` webhook)
 
 ## 8. Consumables & non-renewing
@@ -164,9 +166,9 @@ Attach higher tiers to lower entitlements too (`pro` products → `plus` + `pro`
 
 Same as ios-revenuecat-iap §9 — webhooks are store-agnostic; each event carries `store` (`APP_STORE`, `PLAY_STORE`, `STRIPE`, `RC_BILLING`…) and `environment`. Re-fetch the subscriber and overwrite; idempotent by `event.id`; secret key only on the server.
 
-## 10. Migrating from native plugins (`in_app_purchase`, `react-native-iap`, `expo-iap`)
+## 10. Migrating from native plugins (`react-native-iap`, `expo-iap`)
 
-- [ ] Remove the old plugin's purchase listener and its `completePurchase` / `finishTransaction` calls once RevenueCat completes purchases — two systems finishing transactions race each other
+- [ ] Remove the old plugin's purchase listener and its `finishTransaction` calls once RevenueCat completes purchases — two systems finishing transactions race each other
 - [ ] Keep product IDs (and Play base plan IDs); attach them to entitlements in RevenueCat
 - [ ] Existing subscribers: `syncPurchases()` **once** per install after the update (guarded by a flag), and/or import purchases server-side
 - [ ] Move App Store Server Notifications and Play RTDN to RevenueCat (or forward) — one source of truth
@@ -176,17 +178,18 @@ Same as ios-revenuecat-iap §9 — webhooks are store-agnostic; each event carri
 
 Use only during a transition.
 - [ ] Configure with `purchasesAreCompletedBy` = my app (set the StoreKit version for iOS) — option names differ per SDK version
-- [ ] Your plugin still verifies, grants and finishes/acknowledges (cross-platform-in-app-purchase §4–5 apply)
+- [ ] Your plugin still verifies, grants and finishes/acknowledges (react-native-in-app-purchase §4–5 apply)
 - [ ] Call `syncPurchases()` (or the per-purchase record API your SDK offers) after each purchase so RevenueCat sees it
 - [ ] Gate features from one source only
 
 ## 12. Testing plan
 
-1. **iOS**: StoreKit Configuration file selected in the Xcode scheme (run from Xcode, not `flutter run` / `npx expo run:ios` if the config isn't picked up), then sandbox, then TestFlight
+1. **iOS**: StoreKit Configuration file selected in the Xcode scheme (run from Xcode, not `npx react-native run-ios` / `npx expo run:ios`, if the config isn't picked up), then sandbox, then TestFlight
 2. **Android**: license testers on an internal testing track, test cards (approve / decline / slow), accelerated renewals, Play Billing Lab
 3. **RevenueCat dashboard**: sandbox data toggle; customer view shows purchases from both stores under one App User ID
 4. **Cross-platform**: subscribe on one platform, sign in on the other
-5. **Unit tests**: test the shared entitlement mapping with plain maps (Appendix); there's no public test double for the hybrid SDK
+5. **Unit tests**: test the shared entitlement mapping with plain arrays (Appendix B.3); there's no public test double for the hybrid SDK
+6. **Expo**: always a development build, never Expo Go
 
 ### Scenario matrix
 
@@ -218,198 +221,31 @@ Use only during a transition.
 
 - One RevenueCat **project per platform** → entitlements not shared across iOS/Android
 - iOS key used on Android (or vice versa); key chosen at build time for the wrong platform
-- `configure` called in a screen, twice, or after other Purchases calls; listener added in a widget/component and duplicated on rebuild/re-render
+- `configure` called in a screen, twice, or after other Purchases calls; listener added in a component and duplicated on re-render
 - Packages picked by index; offering missing a product for one platform and the code assumes it exists
 - Gating on product IDs (`com.app.pro.monthly` vs `pro:monthly`) instead of entitlements — breaks on the other platform
 - Android plan change without product change info → double billing; iOS code path passing Android-only params
 - Selling on platform B to a user subscribed on platform A
-- `expirationDate` treated as a `Date` without parsing (hybrid SDKs return ISO strings)
+- `expirationDate` treated as a `Date` without parsing (the hybrid SDK returns ISO strings)
 - Different App User IDs on iOS and Android (e.g. one anonymous) → no cross-platform access
 - Error alert on cancellation; pending shown as failure
-- Old `in_app_purchase` / `react-native-iap` listener still finishing transactions alongside RevenueCat
+- Old `react-native-iap` / `expo-iap` listener still finishing transactions alongside RevenueCat
 - `syncPurchases()` on every launch or as the Restore button
 - Testing in Expo Go; StoreKit config not applied because the app was launched from the CLI
-- Flutter `MainActivity` not a `FlutterFragmentActivity` → RevenueCatUI paywall fails on Android
 - Secret key in the app; debug logging in release
 - Paywall lacking Terms/Privacy or platform-correct cancellation text
 
 ## 14. Output format
 
 When asked to **review/audit**:
-1. **Summary** — framework, SDK versions, platforms (+ web), project/apps setup, who completes purchases, identity model, paywall type, entitlement map across stores
+1. **Summary** — bare RN vs Expo, SDK versions, platforms (+ web), project/apps setup, who completes purchases, identity model, paywall type, entitlement map across stores
 2. **Checklist results** — sections 2–11 with ✅ / ❌ / ⚠️ and file:line, split **Shared / iOS / Android** where relevant (dashboard and console items listed for the user to confirm)
 3. **Critical issues first** (no cross-platform sharing, double billing, cross-store double subscriptions, lost access, wrong-user merges, key exposure, policy risks) with fix code
 4. **Testing gaps** — C1–C21 not covered
 
-When asked to **implement**: start from the Appendix for the user's framework, adapt entitlement IDs, remove unused parts, then list dashboard, App Store Connect, Play Console, backend, and policy steps.
+When asked to **implement**: start from the Appendix, adapt entitlement IDs, remove unused parts, then list dashboard, App Store Connect, Play Console, backend, and policy steps.
 
 ---
-
-## Appendix A — Flutter (`purchases_flutter` 8.x / `purchases_ui_flutter`)
-
-### A.1 Shared mapping (pure Dart, unit-testable)
-
-```dart
-enum Tier { free, plus, pro }
-
-class Entitlement {
-  static const plus = 'plus';
-  static const pro = 'pro';
-  static const cloudBackup = 'cloud_backup';
-}
-
-class AppEntitlements {
-  const AppEntitlements({this.tier = Tier.free, this.addons = const {}, this.store,
-                         this.expiresAt, this.willRenew = false, this.billingIssue = false});
-  final Tier tier;
-  final Set<String> addons;
-  final String? store;          // 'APP_STORE' | 'PLAY_STORE' | 'STRIPE' | ...
-  final DateTime? expiresAt;
-  final bool willRenew;
-  final bool billingIssue;
-
-  bool get hasBasePlan => tier != Tier.free;
-}
-
-/// Pure function over active entitlement IDs — test it with plain sets.
-Tier tierFor(Set<String> activeIds) =>
-    activeIds.contains(Entitlement.pro) ? Tier.pro
-    : activeIds.contains(Entitlement.plus) ? Tier.plus
-    : Tier.free;
-```
-
-### A.2 SubscriptionService
-
-```dart
-import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
-import 'package:purchases_flutter/purchases_flutter.dart';
-
-class SubscriptionService extends ChangeNotifier {
-  static const _appleKey = 'appl_XXXXXXXX';
-  static const _googleKey = 'goog_XXXXXXXX';
-
-  Offering? offering;
-  AppEntitlements entitlements = const AppEntitlements();
-  bool purchasing = false;
-  bool awaitingPayment = false;
-  String? scheduledProductId;   // deferred downgrade hint
-  String? message;
-
-  /// Call once at app start, before runApp's UI needs purchase state.
-  Future<void> configure({String? userId}) async {
-    if (kDebugMode) await Purchases.setLogLevel(LogLevel.debug);
-    final config = PurchasesConfiguration(Platform.isIOS ? _appleKey : _googleKey)..appUserID = userId;
-    await Purchases.configure(config);
-    Purchases.addCustomerInfoUpdateListener(_apply);   // renewals, refunds, other devices, approvals
-    _apply(await Purchases.getCustomerInfo());
-    await loadOfferings();
-  }
-
-  Future<void> loadOfferings() async {
-    try {
-      offering = (await Purchases.getOfferings()).current;
-    } on PlatformException {
-      message = "Couldn't load the store. Please try again.";
-    }
-    notifyListeners();
-  }
-
-  /// Another store owns the active subscription → don't sell here.
-  bool get managedElsewhere {
-    final store = entitlements.store;
-    if (!entitlements.hasBasePlan || store == null) return false;
-    return Platform.isIOS ? store != 'APP_STORE' : store != 'PLAY_STORE';
-  }
-
-  Future<void> purchase(Package package, {String? replacingProductId, bool downgrade = false}) async {
-    if (purchasing || managedElsewhere) return;
-    purchasing = true; message = null; notifyListeners();
-    try {
-      final info = await Purchases.purchasePackage(
-        package,
-        // Android tier change: REQUIRED, or the user is billed twice. Ignored on iOS.
-        googleProductChangeInfo: Platform.isAndroid && replacingProductId != null
-            ? GoogleProductChangeInfo(replacingProductId,
-                prorationMode: downgrade ? GoogleProrationMode.deferred
-                                         : GoogleProrationMode.immediateAndChargeProratedPrice)
-            : null,
-      );
-      _apply(info);
-      if (downgrade) scheduledProductId = package.storeProduct.identifier;
-    } on PlatformException catch (e) {
-      switch (PurchasesErrorHelper.getErrorCode(e)) {
-        case PurchasesErrorCode.purchaseCancelledError:
-          break;                                         // no alert
-        case PurchasesErrorCode.paymentPendingError:
-          awaitingPayment = true;
-        case PurchasesErrorCode.networkError:
-          message = "You're offline. Check your connection and try again.";
-        case PurchasesErrorCode.receiptAlreadyInUseError:
-          message = 'This purchase belongs to another account.';
-        default:
-          message = 'Purchase failed. Please try again.';
-      }
-    } finally {
-      purchasing = false; notifyListeners();
-    }
-  }
-
-  Future<void> restore() async {
-    try {
-      final info = await Purchases.restorePurchases();
-      _apply(info);
-      if (info.entitlements.active.isEmpty) message = 'No previous purchases found.';
-    } on PlatformException {
-      message = 'Restore failed. Please try again.';
-    }
-    notifyListeners();
-  }
-
-  Future<void> signIn(String userId) async => _apply((await Purchases.logIn(userId)).customerInfo);
-
-  Future<void> signOut() async {
-    if (await Purchases.isAnonymous) return;
-    _apply(await Purchases.logOut());
-  }
-
-  void _apply(CustomerInfo info) {
-    final active = info.entitlements.active;
-    final plan = active[Entitlement.pro] ?? active[Entitlement.plus]
-        ?? info.entitlements.all[Entitlement.pro] ?? info.entitlements.all[Entitlement.plus];
-    entitlements = AppEntitlements(
-      tier: tierFor(active.keys.toSet()),
-      addons: {if (active.containsKey(Entitlement.cloudBackup)) Entitlement.cloudBackup},
-      store: plan?.store.name.toUpperCase(),                         // verify enum naming for your SDK
-      expiresAt: plan?.expirationDate != null ? DateTime.tryParse(plan!.expirationDate!) : null,
-      willRenew: plan?.willRenew ?? false,
-      billingIssue: plan?.billingIssueDetectedAt != null,
-    );
-    if (scheduledProductId != null && plan?.productIdentifier == scheduledProductId) scheduledProductId = null;
-    awaitingPayment = false;
-    notifyListeners();
-  }
-}
-```
-
-### A.3 Paywall & Customer Center
-
-```dart
-import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
-
-Future<void> openProFeature(BuildContext context) async {
-  // Shows the remote paywall only if the user lacks the entitlement.
-  final result = await RevenueCatUI.presentPaywallIfNeeded(Entitlement.pro);
-  if (result == PaywallResult.purchased || result == PaywallResult.restored || result == PaywallResult.notPresented) {
-    if (context.mounted) Navigator.of(context).pushNamed('/pro-feature');
-  }
-}
-
-Future<void> openManage() => RevenueCatUI.presentCustomerCenter();
-```
-
-Android: make `MainActivity` extend `FlutterFragmentActivity` for RevenueCatUI.
 
 ## Appendix B — React Native / Expo (`react-native-purchases` 8.x / `react-native-purchases-ui`)
 
@@ -553,6 +389,8 @@ export function PaywallScreen({ onClose }: { onClose: () => void }) {
 ```
 
 **Expo:** `npx expo install react-native-purchases react-native-purchases-ui`, then build a development client (`eas build --profile development` or `npx expo run:ios|android`). Don't test purchases in Expo Go.
+
+**Bare React Native:** `npm install react-native-purchases react-native-purchases-ui`, then `cd ios && pod install`; rebuild the native app.
 
 ### B.3 Tests for the shared mapping
 
