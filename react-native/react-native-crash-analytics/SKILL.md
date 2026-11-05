@@ -362,17 +362,7 @@ export default (): ExpoConfig => ({
 }
 ```
 
-```js
-// metro.config.js — debug IDs for Hermes maps
-const { getSentryExpoConfig } = require('@sentry/react-native/metro');
-module.exports = getSentryExpoConfig(__dirname);
-```
-
-```yaml
-# .eas/workflows or CI step after OTA publish
-#   eas update --channel production --message "$MSG"
-#   npx sentry-expo-upload-sourcemaps dist      # SENTRY_AUTH_TOKEN from EAS secrets
-```
+Metro (`getSentryExpoConfig`) and the post-`eas update` source-map upload are as in §3.
 
 ### A.2 Typed event catalogue
 
@@ -387,16 +377,11 @@ const ev = <N extends string, P>(name: N, v = 1) => (params: P): AnalyticsEvent<
 
 export const Events = {
   signup_completed: ev<'signup_completed', { method: 'email' | 'apple' | 'google' }>('signup_completed'),
-  onboarding_completed: ev<'onboarding_completed', { steps: number }>('onboarding_completed'),
-  product_viewed: ev<'product_viewed', { product_id: string; source: 'search' | 'feed' | 'deep_link' }>('product_viewed'),
   cart_item_added: ev<'cart_item_added', { product_id: string; quantity: number; price: number; currency: Currency }>('cart_item_added'),
   checkout_started: ev<'checkout_started', { item_count: number; value: number; currency: Currency }>('checkout_started'),
   paywall_viewed: ev<'paywall_viewed', { placement: string }>('paywall_viewed'),
-  purchase_started: ev<'purchase_started', { product_id: string }>('purchase_started'),
   purchase_completed: ev<'purchase_completed', { product_id: string; value: number; currency: Currency; transaction_id: string }>('purchase_completed', 2),
-  purchase_failed: ev<'purchase_failed', { product_id: string; reason: 'cancelled' | 'payment' | 'network' | 'unknown' }>('purchase_failed'),
-  deep_link_opened: ev<'deep_link_opened', { route_name: string; source?: string; campaign?: string; cold_start: boolean }>('deep_link_opened'),
-  notification_opened: ev<'notification_opened', { category: string }>('notification_opened'),
+  // + onboarding_completed, product_viewed, purchase_started/failed, deep_link_opened, notification_opened (§11 shapes)
   account_added: ev<'account_added', { account_count: number }>('account_added'),
   account_switched: ev<'account_switched', { account_count: number }>('account_switched'),
   portal_switched: ev<'portal_switched', { portal_count: number }>('portal_switched'),
@@ -481,23 +466,14 @@ import type { AnalyticsEvent } from '../analytics/events';
 export type Props = Record<string, string | number | boolean | undefined>;
 
 export interface Analytics {
-  setEnabled(on: boolean): Promise<void>;
-  track(e: AnalyticsEvent): void;
-  screen(routeName: string): void;
-  identify(userId: string | null): void;
-  setSuperProps(p: Props): void;
-  flush(): Promise<void>;
+  setEnabled(on: boolean): Promise<void>; track(e: AnalyticsEvent): void; screen(routeName: string): void;
+  identify(userId: string | null): void; setSuperProps(p: Props): void; flush(): Promise<void>;
   reset(): Promise<void>;          // new app-instance id, delete queued data
 }
 export interface CrashReporter {
-  setEnabled(on: boolean): Promise<void>;
-  nonFatal(err: unknown, ctx?: Props): void;
-  fatal(err: unknown): Promise<void>;
-  breadcrumb(message: string, data?: Props): void;
-  setUser(id: string | null): void;
-  setKeys(keys: Props): void;
-  deleteUnsent(): Promise<void>;
-  flush(): Promise<void>;
+  setEnabled(on: boolean): Promise<void>; nonFatal(err: unknown, ctx?: Props): void; fatal(err: unknown): Promise<void>;
+  breadcrumb(message: string, data?: Props): void; setUser(id: string | null): void; setKeys(keys: Props): void;
+  deleteUnsent(): Promise<void>; flush(): Promise<void>;
 }
 
 export const toError = (e: unknown): Error =>
@@ -506,13 +482,10 @@ export const toError = (e: unknown): Error =>
 export class FakeAnalytics implements Analytics {
   events: AnalyticsEvent[] = []; screens: string[] = []; userId: string | null = null; enabled = false;
   async setEnabled(on: boolean) { this.enabled = on; }
-  track(e: AnalyticsEvent) { this.events.push(e); }
-  screen(n: string) { this.screens.push(n); }
-  identify(id: string | null) { this.userId = id; }
-  setSuperProps() {}
-  async flush() {}
-  async reset() { this.events = []; }
+  track(e: AnalyticsEvent) { this.events.push(e); } screen(n: string) { this.screens.push(n); }
+  identify(id: string | null) { this.userId = id; } setSuperProps() {} async flush() {} async reset() { this.events = []; }
 }
+// FakeCrashReporter: same shape, records calls in arrays.
 ```
 
 ```ts
@@ -629,12 +602,10 @@ export class SentryReporter implements CrashReporter {
       dist: Updates.updateId ?? Application.nativeBuildVersion ?? undefined,
       sendDefaultPii: false,
       enableAutoSessionTracking: false,        // turned on by consent (verify runtime toggle; else re-init)
-      enableAppHangTracking: true,
-      enableWatchdogTerminationTracking: true,
-      tracesSampleRate: 0.1,
-      tracePropagationTargets: [/^https:\/\/api\.example\.com/],
+      enableAppHangTracking: true, enableWatchdogTerminationTracking: true,
+      tracesSampleRate: 0.1, tracePropagationTargets: [/^https:\/\/api\.example\.com/],
       integrations: [navigationIntegration],
-      beforeSend: (event) => {
+      beforeSend: (event) => {                 // consent gate + scrub
         if (!this.enabled) return null;
         event.message = scrub(event.message);
         event.exception?.values?.forEach((v) => (v.value = scrub(v.value)));
@@ -652,6 +623,7 @@ export class SentryReporter implements CrashReporter {
   }
   async setEnabled(on: boolean) { this.enabled = on; if (!on) await Sentry.flush(); }
   nonFatal(err: unknown, ctx?: Props) { Sentry.captureException(toError(err), { extra: ctx }); }
+  async fatal(err: unknown) { Sentry.captureException(toError(err), { level: 'fatal' }); await Sentry.flush(); }
   async fatal(err: unknown) {
     Sentry.captureException(toError(err), { level: 'fatal' });
     await Sentry.flush();
@@ -677,12 +649,12 @@ import { toError, type CrashReporter } from './types';
 const sentry = new SentryReporter();
 sentry.init();
 
+// fanOut: a CrashReporter that forwards every method to each delegate (Promise.all for async ones).
 const fanOut = (rs: CrashReporter[]): CrashReporter => ({
   setEnabled: async (on) => { await Promise.all(rs.map((r) => r.setEnabled(on))); },
   nonFatal: (e, c) => rs.forEach((r) => r.nonFatal(e, c)),
   fatal: async (e) => { await Promise.all(rs.map((r) => r.fatal(e))); },
-  breadcrumb: (m, d) => rs.forEach((r) => r.breadcrumb(m, d)),
-  setUser: (id) => rs.forEach((r) => r.setUser(id)),
+  breadcrumb: (m, d) => rs.forEach((r) => r.breadcrumb(m, d)), setUser: (id) => rs.forEach((r) => r.setUser(id)),
   setKeys: (k) => rs.forEach((r) => r.setKeys(k)),
   deleteUnsent: async () => { await Promise.all(rs.map((r) => r.deleteUnsent())); },
   flush: async () => { await Promise.all(rs.map((r) => r.flush())); },
@@ -710,45 +682,12 @@ ErrorUtils.setGlobalHandler((error, isFatal) => {
   previous(error, isFatal);
 });
 
-// Unhandled rejections (Hermes). Skip if Sentry's integration already covers it.
-type HermesTracker = { enablePromiseRejectionTracker?: (o: {
-  allRejections: boolean; onUnhandled: (id: number, e: unknown) => void; onHandled: () => void }) => void };
-const hermes = (globalThis as { HermesInternal?: HermesTracker }).HermesInternal;
-const SENTRY_TRACKS_REJECTIONS = true;
-if (!SENTRY_TRACKS_REJECTIONS && hermes?.enablePromiseRejectionTracker) {
-  hermes.enablePromiseRejectionTracker({
-    allRejections: true,
-    onUnhandled: (_id, e) => crash.nonFatal(toError(e), { kind: 'unhandled_rejection' }),
-    onHandled: () => {},
-  });
-}
+// Unhandled rejections (Hermes): Sentry's integration covers them. Without Sentry, use
+// HermesInternal.enablePromiseRejectionTracker({ allRejections: true, onUnhandled: (_id, e) =>
+//   crash.nonFatal(toError(e), { kind: 'unhandled_rejection' }) }) (verify; internal API).
 ```
 
-```tsx
-// observability/ErrorBoundary.tsx
-import React from 'react';
-import { Button, Text, View } from 'react-native';
-import * as Updates from 'expo-updates';
-import { crash } from '.';
-
-export class ScreenErrorBoundary extends React.Component<{ name: string; children: React.ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  componentDidCatch(error: Error, info: React.ErrorInfo) {
-    crash.nonFatal(error, { boundary: this.props.name, componentStack: info.componentStack?.slice(0, 1000) });
-  }
-  render() {
-    if (!this.state.failed) return this.props.children;
-    return (
-      <View accessibilityRole="alert" style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        <Text>Something went wrong.</Text>
-        <Button title="Try again" onPress={() => this.setState({ failed: false })} />
-        <Button title="Restart app" onPress={() => void Updates.reloadAsync()} />
-      </View>
-    );
-  }
-}
-```
+`ScreenErrorBoundary` (observability/ErrorBoundary.tsx): class component with `getDerivedStateFromError` → `{ failed: true }`; `componentDidCatch` calls `crash.nonFatal(error, { boundary: name, componentStack: info.componentStack?.slice(0, 1000) })`; fallback UI with `accessibilityRole="alert"`, "Try again" (reset state) and "Restart app" (`Updates.reloadAsync()`).
 
 ### A.7 Consent prompt hooked into first login
 

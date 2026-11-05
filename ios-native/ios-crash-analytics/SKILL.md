@@ -343,14 +343,9 @@ enum AnalyticsEvent: Sendable {
     case userLoggedIn(method: String)               // "password" | "apple" | "google"
     case accountSwitched(accountCount: Int)
     case portalSwitched(role: String)
-    case itemViewed(itemId: String)
-    case cartItemAdded(itemId: String, quantity: Int)
     case paywallViewed(placement: String)
-    case purchaseStarted(productId: String)
     case purchaseCompleted(productId: String, price: Decimal, currency: String)
-    case purchaseFailed(productId: String, reason: String)
-    case deepLinkOpened(route: String, source: String?, campaign: String?)
-    case pushOpened(campaign: String?)
+    // Also: itemViewed, cartItemAdded, purchaseStarted/Failed, deepLinkOpened, pushOpened — same pattern.
 
     var name: String {
         switch self {
@@ -358,14 +353,9 @@ enum AnalyticsEvent: Sendable {
         case .userLoggedIn: "user_logged_in"
         case .accountSwitched: "account_switched"
         case .portalSwitched: "portal_switched"
-        case .itemViewed: "item_viewed"
-        case .cartItemAdded: "cart_item_added"
         case .paywallViewed: "paywall_viewed"
-        case .purchaseStarted: "purchase_started"
         case .purchaseCompleted: "purchase_completed"
-        case .purchaseFailed: "purchase_failed"
         case .deepLinkOpened: "deep_link_opened"
-        case .pushOpened: "push_opened"
         }
     }
 
@@ -376,19 +366,10 @@ enum AnalyticsEvent: Sendable {
         case .userLoggedIn(let m): ["method": .string(m)]
         case .accountSwitched(let c): ["account_count": .int(c)]
         case .portalSwitched(let r): ["role": .string(r)]
-        case .itemViewed(let id): ["item_id": .string(id)]
-        case .cartItemAdded(let id, let q): ["item_id": .string(id), "quantity": .int(q)]
         case .paywallViewed(let p): ["placement": .string(p)]
-        case .purchaseStarted(let p): ["product_id": .string(p)]
         case .purchaseCompleted(let p, let price, let cur):
             ["product_id": .string(p), "value": .double(NSDecimalNumber(decimal: price).doubleValue),
              "currency": .string(cur)]
-        case .purchaseFailed(let p, let r): ["product_id": .string(p), "reason": .string(r)]
-        case .deepLinkOpened(let route, let src, let camp):
-            ["route": .string(route)].merging(
-                [("source", src), ("campaign", camp)].compactMap { k, v in v.map { (k, .string($0)) } },
-                uniquingKeysWith: { a, _ in a })
-        case .pushOpened(let c): c.map { ["campaign": .string($0)] } ?? [:]
         }
     }
 }
@@ -409,15 +390,14 @@ struct EventEnvelope: Sendable, Codable {
     let sessionId: String
     let consentVersion: Int
     let clientTs: Date
+    /// event_version, app_version, build (Info.plist), platform "ios", session_id,
+    /// consent_version, event_id, and portal_id when set.
     var requiredProps: [String: AnalyticsValue] {
-        let info = Bundle.main.infoDictionary ?? [:]
         var p: [String: AnalyticsValue] = [
-            "event_version": .int(AnalyticsEvent.schemaVersion),
-            "app_version": .string(info["CFBundleShortVersionString"] as? String ?? "?"),
-            "build": .string(info["CFBundleVersion"] as? String ?? "?"),
-            "platform": .string("ios"), "session_id": .string(sessionId),
-            "consent_version": .int(consentVersion), "event_id": .string(eventId.uuidString),
-        ]
+            "event_version": .int(AnalyticsEvent.schemaVersion), "platform": .string("ios"),
+            "session_id": .string(sessionId), "consent_version": .int(consentVersion),
+            "event_id": .string(eventId.uuidString),
+        ] // + app_version / build from Bundle.main.infoDictionary
         if let portalId { p["portal_id"] = .string(portalId) }
         return p
     }
@@ -491,29 +471,25 @@ enum DefaultsWiper {
 import Foundation
 
 protocol AnalyticsSink: Sendable {
-    func setCollectionEnabled(_ on: Bool)
-    func send(_ e: EventEnvelope)
-    func identify(userId: String?)
-    func setUserProperty(_ name: String, _ value: String?)
-    func reset()
-    func flush() async
-    func deleteQueued()
+    func setCollectionEnabled(_ on: Bool); func send(_ e: EventEnvelope)
+    func identify(userId: String?); func setUserProperty(_ name: String, _ value: String?)
+    func reset(); func flush() async; func deleteQueued()
 }
 
 protocol CrashReporter: Sendable {
     func setCollectionEnabled(_ on: Bool, includePastReports: Bool)
-    func record(error: Error, context: [String: String])
-    func breadcrumb(_ message: String, category: String)
-    func setKey(_ key: String, _ value: String)
-    func setUser(id: String?)
+    func record(error: Error, context: [String: String]); func breadcrumb(_ message: String, category: String)
+    func setKey(_ key: String, _ value: String); func setUser(id: String?)
 }
 
 @MainActor
 final class Telemetry {
+    private let consent: ConsentStore; private let sinks: [AnalyticsSink]; private let crash: [CrashReporter]
     private let consent: ConsentStore
     private let sinks: [AnalyticsSink]
     private let crash: [CrashReporter]
     private(set) var anonymousId: String
+    private var userId: String?, portalId: String?
     private var userId: String?
     private var portalId: String?
     private let sessionId = UUID().uuidString
@@ -541,9 +517,7 @@ final class Telemetry {
                                 anonymousId: anonymousId, userId: userId, portalId: portalId,
                                 sessionId: sessionId, consentVersion: consent.record?.version ?? 0,
                                 clientTs: .now)
-        #if DEBUG
-        assert(event.name.count <= 40 && event.properties.count <= 25, "Event violates vendor limits")
-        #endif
+        assert(event.name.count <= 40 && event.properties.count <= 25, "Event violates vendor limits") // debug only
         sinks.forEach { $0.send(env) }
     }
 
@@ -554,9 +528,7 @@ final class Telemetry {
         crash.forEach { $0.record(error: error, context: context) }
     }
 
-    func breadcrumb(_ message: String, category: String) {
-        crash.forEach { $0.breadcrumb(message, category: category) }
-    }
+    func breadcrumb(_ message: String, category: String) { crash.forEach { $0.breadcrumb(message, category: category) } }
 
     // MARK: identity (A.7 uses these)
     func identify(userId: String, portalId: String?) async {
@@ -567,9 +539,7 @@ final class Telemetry {
     }
 
     func setPortal(_ id: String?) {
-        portalId = id
-        sinks.forEach { $0.setUserProperty("portal_id", id) }
-        crash.forEach { $0.setKey("portal_id", id ?? "none") }
+        portalId = id; sinks.forEach { $0.setUserProperty("portal_id", id) }; crash.forEach { $0.setKey("portal_id", id ?? "none") }
     }
 
     func resetIdentity(defaults: UserDefaults = .standard) async {
@@ -590,17 +560,7 @@ final class Telemetry {
 
 ### A.4 Vendor adapters (Firebase, Crashlytics, Sentry)
 
-Info.plist (build-time defaults OFF):
-
-```xml
-<key>FIREBASE_ANALYTICS_COLLECTION_ENABLED</key><false/>
-<key>FirebaseCrashlyticsCollectionEnabled</key><false/>
-<key>FirebaseAutomaticScreenReportingEnabled</key><false/>
-<key>GOOGLE_ANALYTICS_DEFAULT_ALLOW_ANALYTICS_STORAGE</key><false/>
-<key>GOOGLE_ANALYTICS_DEFAULT_ALLOW_AD_STORAGE</key><false/>
-<key>GOOGLE_ANALYTICS_DEFAULT_ALLOW_AD_USER_DATA</key><false/>
-<key>GOOGLE_ANALYTICS_DEFAULT_ALLOW_AD_PERSONALIZATION_SIGNALS</key><false/>
-```
+Info.plist build-time defaults OFF: see the keys listed in section 2.
 
 ```swift
 import FirebaseAnalytics
@@ -648,27 +608,15 @@ final class SentryReporter: CrashReporter, @unchecked Sendable {
     func setCollectionEnabled(_ on: Bool, includePastReports: Bool) {
         lock.lock(); defer { lock.unlock() }
         if on, !started {
-            let info = Bundle.main.infoDictionary ?? [:]
-            let version = info["CFBundleShortVersionString"] as? String ?? "0"
-            let build = info["CFBundleVersion"] as? String ?? "0"
             SentrySDK.start { o in
-                o.dsn = self.dsn
-                o.environment = self.environment
-                o.releaseName = "\(Bundle.main.bundleIdentifier ?? "app")@\(version)+\(build)"
-                o.dist = build
+                o.dsn = self.dsn; o.environment = self.environment
+                // releaseName "<bundleId>@<version>+<build>", dist = build (from Info.plist)
                 o.sendDefaultPii = false
-                o.enableAppHangTracking = true
-                o.appHangTimeoutInterval = 2
+                o.enableAppHangTracking = true; o.appHangTimeoutInterval = 2
                 o.enableWatchdogTerminationTracking = true
                 o.tracesSampleRate = self.environment == "appstore" ? 0.1 : 1.0
-                o.attachScreenshot = false
-                o.attachViewHierarchy = false
-                o.beforeBreadcrumb = { crumb in
-                    if let url = crumb.data?["url"] as? String {          // strip query strings
-                        crumb.data?["url"] = url.components(separatedBy: "?").first
-                    }
-                    return crumb
-                }
+                o.attachScreenshot = false; o.attachViewHierarchy = false
+                // beforeBreadcrumb: strip query strings from crumb.data["url"]
             }
             started = true
         } else if !on, started {
@@ -678,10 +626,7 @@ final class SentryReporter: CrashReporter, @unchecked Sendable {
     func record(error: Error, context: [String: String]) {
         SentrySDK.capture(error: error) { scope in context.forEach { scope.setTag(value: $1, key: $0) } }
     }
-    func breadcrumb(_ m: String, category: String) {
-        let b = Breadcrumb(level: .info, category: category); b.message = m
-        SentrySDK.addBreadcrumb(b)
-    }
+    func breadcrumb(_ m: String, category: String) { let b = Breadcrumb(level: .info, category: category); b.message = m; SentrySDK.addBreadcrumb(b) }
     func setKey(_ k: String, _ v: String) { SentrySDK.configureScope { $0.setTag(value: v, key: k) } }
     func setUser(id: String?) { SentrySDK.setUser(id.map { User(userId: $0) }) }
 }
@@ -691,12 +636,9 @@ final class SentryReporter: CrashReporter, @unchecked Sendable {
 
 ```swift
 import MetricKit
-import os
 
 final class MetricKitCollector: NSObject, MXMetricManagerSubscriber, @unchecked Sendable {
     private let upload: @Sendable (Data, String) -> Void   // (json, kind) → your backend
-    private let log = Logger(subsystem: "app.telemetry", category: "metrickit")
-
     init(upload: @escaping @Sendable (Data, String) -> Void) {
         self.upload = upload
         super.init()
@@ -704,24 +646,10 @@ final class MetricKitCollector: NSObject, MXMetricManagerSubscriber, @unchecked 
     }
     deinit { MXMetricManager.shared.remove(self) }
 
-    func didReceive(_ payloads: [MXMetricPayload]) {
-        for p in payloads {
-            if let exits = p.applicationExitMetrics {
-                let bg = exits.backgroundExitData, fg = exits.foregroundExitData
-                log.info("OOM bg=\(bg.cumulativeMemoryResourceLimitExitCount) fg=\(fg.cumulativeMemoryResourceLimitExitCount) watchdog=\(bg.cumulativeAppWatchdogExitCount)")
-            }
-            upload(p.jsonRepresentation(), "metrics")
-        }
-    }
-
-    func didReceive(_ payloads: [MXDiagnosticPayload]) {
-        for p in payloads {
-            // Unsymbolicated: symbolicate server-side with the matching dSYM (binary UUID in payload).
-            if let crashes = p.crashDiagnostics, !crashes.isEmpty { log.info("crashes=\(crashes.count)") }
-            if let hangs = p.hangDiagnostics, !hangs.isEmpty { log.info("hangs=\(hangs.count)") }
-            upload(p.jsonRepresentation(), "diagnostics")
-        }
-    }
+    // Metrics include applicationExitMetrics (memory-limit / watchdog exit counts, fg and bg).
+    func didReceive(_ payloads: [MXMetricPayload]) { payloads.forEach { upload($0.jsonRepresentation(), "metrics") } }
+    // Unsymbolicated crash/hang diagnostics: symbolicate server-side with the matching dSYM.
+    func didReceive(_ payloads: [MXDiagnosticPayload]) { payloads.forEach { upload($0.jsonRepresentation(), "diagnostics") } }
 }
 ```
 
@@ -824,6 +752,7 @@ struct PrivacySettingsView: View {
     }
 }
 
+
 struct HomeView: View { var body: some View { Text("Home") } }
 ```
 
@@ -879,12 +808,8 @@ struct ExampleApp: App {
         }
     }
 
-    var body: some Scene {
-        WindowGroup { SignedInRoot(consent: consent, telemetry: telemetry) }
-    }
+    var body: some Scene { WindowGroup { SignedInRoot(consent: consent, telemetry: telemetry) } }
 }
 
-enum FirebaseBootstrap { static func configureIfNeeded() { /* FirebaseApp.configure() */ } }
-enum BuildEnv { static let current = "appstore"; static let sentryDSN = "" }   // from xcconfig
-actor DiagnosticsUploader { static let shared = DiagnosticsUploader(); func enqueue(_ d: Data, kind: String) {} }
+// FirebaseBootstrap (FirebaseApp.configure()), BuildEnv (from xcconfig), DiagnosticsUploader actor: app-specific.
 ```
