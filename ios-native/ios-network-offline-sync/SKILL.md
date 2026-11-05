@@ -443,11 +443,7 @@ enum APIError: Error, Sendable, Equatable {
     var userMessage: String {
         switch self {
         case .offline: String(localized: "You're offline. We'll sync when you're back online.")
-        case .timeout: String(localized: "The connection is slow. Please try again.")
         case .unauthorized: String(localized: "Please sign in again.")
-        case .forbidden: String(localized: "You don't have access to this.")
-        case .notFound: String(localized: "This item is no longer available.")
-        case .rateLimited: String(localized: "Too many requests. Please wait a moment.")
         case .http(_, _, let message?): message      // only if server guarantees user-safe text
         default: String(localized: "Something went wrong. Please try again.")
         }
@@ -474,7 +470,7 @@ enum APIError: Error, Sendable, Equatable {
         switch status {
         case 401: return .unauthorized
         case 403: return .forbidden
-        case 404, 410 where body?.code != "cursor_expired": return .notFound
+        case 404: return .notFound
         case 409, 412: return .conflict(serverBody: data)
         case 429: return .rateLimited(retryAfter: retryAfter)
         case 500...599: return .server(status: status, retryAfter: retryAfter)
@@ -590,7 +586,7 @@ actor APIClient {
         d.dateDecodingStrategy = .custom { dec in
             let s = try dec.singleValueContainer().decode(String.self)
             let f = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-            if let date = try? f.parse(s) ?? Date.ISO8601FormatStyle().parse(s) { return date }
+            if let date = (try? f.parse(s)) ?? (try? Date.ISO8601FormatStyle().parse(s)) { return date }
             throw DecodingError.dataCorrupted(.init(codingPath: dec.codingPath, debugDescription: "bad date \(s)"))
         }
         self.decoder = d
@@ -599,6 +595,7 @@ actor APIClient {
     func send<R>(_ ep: Endpoint<R>) async throws -> R {
         let (data, _) = try await sendRaw(ep)
         if R.self == EmptyResponse.self { return EmptyResponse() as! R }
+        if data.isEmpty, let opt = R.self as? any ExpressibleByNilLiteral.Type { return opt.init(nilLiteral: ()) as! R }
         do { return try decoder.decode(R.self, from: data) }
         catch { throw APIError.decoding(endpoint: ep.path, detail: String(describing: error)) }
     }
@@ -612,9 +609,7 @@ actor APIClient {
         let task = Task { try await self.withRetry(ep, requestId: requestId) }
         inFlightGETs[key] = task
         defer { inFlightGETs[key] = nil }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: { }                                             // caller stops awaiting; task finishes for others
+        return try await task.value                                 // refcounting omitted for brevity
     }
 
     private func withRetry<R>(_ ep: Endpoint<R>, requestId: String) async throws -> (Data, HTTPURLResponse) {
@@ -827,14 +822,11 @@ struct NotesView: View {
                 if note.syncState != .synced { Image(systemName: note.syncState == .failed ? "exclamationmark.circle" : "clock") }
             }
         }
-        .overlay(alignment: .top) { if net.showOfflineBanner { OfflineBanner() } }
+        .overlay(alignment: .top) { if net.showOfflineBanner { Text("You're offline").padding(6).background(.thinMaterial, in: Capsule()) } }
         .refreshable { await sync.syncNow(reason: "pull") }
         .task { await sync.syncNow(reason: "appear") }    // cancelled on disappear
     }
 }
-
-struct OfflineBanner: View {
-    var body: some View { Text("You're offline").font(.footnote).padding(6).background(.thinMaterial, in: Capsule()) }
 }
 ```
 
@@ -993,21 +985,17 @@ final class SyncEngine {
 import BackgroundTasks
 import UIKit
 
-enum BGIds { static let refresh = "com.example.app.refresh"; static let processing = "com.example.app.fullsync" }
+enum BGIds { static let refresh = "com.example.app.refresh" }  // add a BGProcessingTask id for full resync
 // Info.plist: BGTaskSchedulerPermittedIdentifiers = [refresh, processing]
 // Capabilities: Background Modes → Background fetch, Background processing, Remote notifications
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     var makeSyncEngine: (@MainActor () -> SyncEngine?)!      // resolves active account(s)' engine
-    var backgroundSessionCompletion: (() -> Void)?
 
     func application(_ app: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Register BEFORE launch finishes.
         BGTaskScheduler.shared.register(forTaskWithIdentifier: BGIds.refresh, using: nil) { task in
-            self.handle(task as! BGAppRefreshTask)
-        }
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: BGIds.processing, using: nil) { task in
-            self.handle(task as! BGProcessingTask)
+            self.handle(task)
         }
         return true
     }
@@ -1015,13 +1003,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     static func scheduleRefresh() {
         let req = BGAppRefreshTaskRequest(identifier: BGIds.refresh)
         req.earliestBeginDate = .now + 15 * 60                  // minimum, not a schedule
-        try? BGTaskScheduler.shared.submit(req)
-    }
-
-    static func scheduleFullSync() {
-        let req = BGProcessingTaskRequest(identifier: BGIds.processing)
-        req.requiresNetworkConnectivity = true
-        req.requiresExternalPower = false
         try? BGTaskScheduler.shared.submit(req)
     }
 
@@ -1041,46 +1022,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         await engine.syncNow(reason: "push")
         return await engine.lastError == nil ? .newData : .failed
     }
-
-    // Background URLSession relaunch (uploads/downloads)
-    func application(_ app: UIApplication, handleEventsForBackgroundURLSession identifier: String,
-                     completionHandler: @escaping () -> Void) {
-        backgroundSessionCompletion = completionHandler
-        _ = TransferManager.shared                                // recreate session with same identifier
-    }
 }
 
-// SwiftUI: schedule when going to background
-// .onChange(of: scenePhase) { _, p in if p == .background { AppDelegate.scheduleRefresh() } }
-
-final class TransferManager: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    static let shared = TransferManager()
-    private(set) lazy var session: URLSession = {
-        let c = URLSessionConfiguration.background(withIdentifier: "com.example.app.transfers")
-        c.sessionSendsLaunchEvents = true
-        c.isDiscretionary = false
-        return URLSession(configuration: c, delegate: self, delegateQueue: nil)
-    }()
-
-    /// Upload from a FILE; taskDescription maps back to the attachment after relaunch.
-    func upload(file: URL, to presignedURL: URL, attachmentId: UUID) {
-        var req = URLRequest(url: presignedURL); req.httpMethod = "PUT"
-        let task = session.uploadTask(with: req, fromFile: file)
-        task.taskDescription = attachmentId.uuidString
-        task.resume()
-    }
-
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let id = task.taskDescription.flatMap(UUID.init) else { return }
-        // Persist result for attachment `id`; on success enqueue the metadata POST in the outbox.
-        _ = (id, error)
-    }
-
-    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        DispatchQueue.main.async {
-            (UIApplication.shared.delegate as? AppDelegate)?.backgroundSessionCompletion?()
-            (UIApplication.shared.delegate as? AppDelegate)?.backgroundSessionCompletion = nil
-        }
-    }
-}
+// SwiftUI: .onChange(of: scenePhase) { _, p in if p == .background { AppDelegate.scheduleRefresh() } }
+// Background transfers: see section 15 (delegate-based background URLSession, upload fromFile:,
+// taskDescription = attachment id, call the stored completion in urlSessionDidFinishEvents).
 ```
