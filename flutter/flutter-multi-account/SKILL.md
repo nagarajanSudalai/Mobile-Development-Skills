@@ -1257,7 +1257,7 @@ GoRouter buildPortalRouter(String initialLocation) => GoRouter(
     );
 ```
 
-If the app must keep a single `MaterialApp` (e.g. for a global theme or a persistent overlay), keep it above `SessionHost` and switch only the `Router`/`Navigator` subtree under the keyed `UncontrolledProviderScope`; call `router.go(initialLocation)` is **not** enough when the router lives above the session, because existing pages keep their old `State`.
+If the app must keep a single `MaterialApp` (e.g. for a global theme or a persistent overlay), keep it above `SessionHost` and switch only the `Router`/`Navigator` subtree under the keyed `UncontrolledProviderScope`. Calling `router.go(initialLocation)` alone is **not** enough when the router lives above the session, because existing pages keep their old `State`.
 
 ### A.8 Account switcher and portal picker
 
