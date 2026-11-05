@@ -553,19 +553,7 @@ suspend fun <T> withRetry(
     }
 }
 
-fun AppError.userMessage(res: Resources): String = when (this) {
-    AppError.Offline -> res.getString(R.string.err_offline_will_sync)
-    AppError.Timeout -> res.getString(R.string.err_timeout)
-    is AppError.Http -> when (code) {
-        403 -> res.getString(R.string.err_forbidden)
-        404, 410 -> res.getString(R.string.err_not_found)
-        429 -> res.getString(R.string.err_rate_limited)
-        in 500..599 -> res.getString(R.string.err_server)
-        else -> res.getString(R.string.err_generic)
-    }
-    AppError.NeedsReauth -> res.getString(R.string.err_sign_in_again)
-    else -> res.getString(R.string.err_generic)
-}
+// AppError.userMessage(res): one `when` mapping each case to a string resource (section 4).
 ```
 
 ### A.3 API, entities, DAO
@@ -624,11 +612,15 @@ data class SyncState(@PrimaryKey val collection: String, val cursor: String?, va
     @Insert suspend fun insert(e: OutboxEntry): Long
     @Update suspend fun update(e: OutboxEntry)
     @Query("DELETE FROM outbox WHERE seq = :seq") suspend fun delete(seq: Long)
-    @Query("SELECT * FROM outbox WHERE state IN ('PENDING','FAILED_RETRYABLE') ORDER BY seq LIMIT 1")
+    /** Oldest ready entry whose entity has no earlier blocked entry: a failure blocks only its own entity. */
+    @Query("""
+        SELECT * FROM outbox o
+        WHERE o.state IN ('PENDING','FAILED_RETRYABLE')
+          AND NOT EXISTS (SELECT 1 FROM outbox b WHERE b.entityId = o.entityId AND b.seq < o.seq
+                          AND b.state IN ('FAILED_PERMANENT','CONFLICT'))
+        ORDER BY o.seq LIMIT 1""")
     suspend fun nextReady(): OutboxEntry?
     @Query("SELECT DISTINCT entityId FROM outbox") suspend fun pendingEntityIds(): List<String>
-    @Query("SELECT COUNT(*) FROM outbox WHERE entityId = :id AND state IN ('FAILED_PERMANENT','CONFLICT')")
-    suspend fun blockedCount(id: String): Int
     @Query("UPDATE outbox SET state = 'PENDING' WHERE state = 'IN_FLIGHT'") suspend fun resetInFlight()
     @Query("SELECT COUNT(*) FROM outbox") fun observeCount(): Flow<Int>
 }
@@ -646,7 +638,6 @@ abstract class AppDatabase : RoomDatabase() {
 // NO fallbackToDestructiveMigration(): the outbox holds unsynced user changes.
 ```
 
-> Note: `nextReady()` above is simplified FIFO. Skip entries whose `entityId` has a blocked (`FAILED_PERMANENT`/`CONFLICT`) earlier entry so one bad item blocks only its own entity — done in the processor below.
 
 ### A.4 Repository (network → DB → UI)
 
@@ -703,45 +694,48 @@ class OutboxProcessor @Inject constructor(
 
     sealed interface RunResult { data object Done : RunResult; data object RetryLater : RunResult; data object NeedsReauth : RunResult }
 
-    @Suppress("UNREACHABLE_CODE")
     suspend fun drain(): RunResult = mutex.withLock {
         db.outbox().resetInFlight()                                  // crash recovery: resend with same key
-        val skipped = mutableSetOf<Long>()
-        while (true) {
-            val e = nextUnblocked(skipped) ?: return RunResult.Done
-            db.outbox().update(e.copy(state = OutboxState.IN_FLIGHT))
-            try {
-                val server = send(e)
-                db.withTransaction {
-                    if (server != null) db.tasks().upsert(listOf(server.toEntity(LocalState.SYNCED)))
-                    else if (e.op == OutboxOp.DELETE) db.tasks().deleteIds(listOf(e.entityId))
-                    db.outbox().delete(e.seq)
+        var result: RunResult = RunResult.Done
+        while (result == RunResult.Done) {
+            val e = db.outbox().nextReady() ?: break
+            result = process(e)
+        }
+        result
+    }
+
+    /** Returns Done to continue draining, or a stop reason. */
+    private suspend fun process(e: OutboxEntry): RunResult {
+        db.outbox().update(e.copy(state = OutboxState.IN_FLIGHT))
+        return try {
+            val server = send(e)
+            db.withTransaction {
+                if (server != null) db.tasks().upsert(listOf(server.toEntity(LocalState.SYNCED)))
+                else if (e.op == OutboxOp.DELETE) db.tasks().deleteIds(listOf(e.entityId))
+                db.outbox().delete(e.seq)
+            }
+            RunResult.Done
+        } catch (t: Throwable) {
+            val err = t.toAppError(json)
+            when {
+                err is AppError.NeedsReauth -> {
+                    db.outbox().update(e.copy(state = OutboxState.PENDING)); RunResult.NeedsReauth
                 }
-            } catch (t: Throwable) {
-                val err = t.toAppError(json)
-                when {
-                    err is AppError.NeedsReauth -> { db.outbox().update(e.copy(state = OutboxState.PENDING)); return RunResult.NeedsReauth }
-                    err is AppError.Http && (err.code == 409 || err.code == 412) -> markConflict(e, err)
-                    err.isRetryable -> {
-                        db.outbox().update(e.copy(state = OutboxState.FAILED_RETRYABLE, attempts = e.attempts + 1, lastError = err.toString()))
-                        return RunResult.RetryLater                  // keep order: stop, let WorkManager back off
+                err is AppError.Http && (err.code == 409 || err.code == 412) -> { markConflict(e, err); RunResult.Done }
+                err.isRetryable -> {                                 // keep order: stop, let WorkManager back off
+                    db.outbox().update(e.copy(state = OutboxState.FAILED_RETRYABLE,
+                        attempts = e.attempts + 1, lastError = err.toString()))
+                    RunResult.RetryLater
+                }
+                else -> {                                            // 4xx validation: blocks only this entity
+                    db.withTransaction {
+                        db.outbox().update(e.copy(state = OutboxState.FAILED_PERMANENT, lastError = err.toString()))
+                        db.tasks().get(e.entityId)?.let { db.tasks().upsert(listOf(it.copy(localState = LocalState.FAILED))) }
                     }
-                    else -> {                                         // 4xx validation etc: permanent for this item only
-                        db.withTransaction {
-                            db.outbox().update(e.copy(state = OutboxState.FAILED_PERMANENT, lastError = err.toString()))
-                            db.tasks().get(e.entityId)?.let { db.tasks().upsert(listOf(it.copy(localState = LocalState.FAILED))) }
-                        }
-                        skipped += e.seq
-                    }
+                    RunResult.Done
                 }
             }
         }
-    }
-
-    private suspend fun nextUnblocked(skipped: Set<Long>): OutboxEntry? {
-        // Simplified: in production write a single SQL query that excludes entities with blocked earlier entries.
-        val e = db.outbox().nextReady() ?: return null
-        return if (e.seq in skipped || db.outbox().blockedCount(e.entityId) > 0) null else e
     }
 
     private suspend fun send(e: OutboxEntry): TaskDto? {
@@ -902,32 +896,9 @@ class SyncScheduler @Inject constructor(
     fun cancelAll() { wm.cancelUniqueWork("sync-$accountId"); wm.cancelUniqueWork("sync-periodic-$accountId") }
 }
 
-// Triggers
-class AppSyncTriggers @Inject constructor(private val connectivity: ConnectivityObserver,
-                                          @AppScope private val scope: CoroutineScope) {
-    fun start(scheduler: () -> SyncScheduler?) {
-        scope.launch {
-            connectivity.status.drop(1).filter { it == Connectivity.Online }
-                .collect { scheduler()?.kickOutbox(expedited = false) }       // reconnect
-        }
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) { scheduler()?.kickOutbox(expedited = false) } // foreground
-        })
-    }
-}
-
-// FCM data message -> enqueue, never network in onMessageReceived (see android-push-notifications)
-class PushService : FirebaseMessagingService() {
-    override fun onMessageReceived(msg: RemoteMessage) {
-        if (msg.data["type"] != "sync") return
-        val acct = msg.data["accountId"] ?: return
-        val req = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setInputData(workDataOf(SyncWorker.KEY_ACCOUNT to acct))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).build()
-        WorkManager.getInstance(this).enqueueUniqueWork("sync-$acct", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
-    }
-}
+// Triggers: ConnectivityObserver Offline->Online and ProcessLifecycleOwner onStart call kickOutbox().
+// FCM: onMessageReceived(type=="sync") builds the same expedited request with msg.data["accountId"]
+// and enqueueUniqueWork("sync-$acct", APPEND_OR_REPLACE, req) -- never network work in the service.
 ```
 
 Manifest (API 34+), when expedited work may fall back to a foreground service:
@@ -938,63 +909,27 @@ Manifest (API 34+), when expedited work may fall back to a foreground service:
     android:foregroundServiceType="dataSync" tools:node="merge" />
 ```
 
-### A.9 Realtime WebSocket with backoff and catch-up
+### A.9 Realtime WebSocket (sketch)
 
 ```kotlin
-class RealtimeClient(
-    private val client: OkHttpClient, private val url: String, private val scope: CoroutineScope,
-    private val lastEventId: suspend () -> String?, private val onEvent: suspend (String) -> Unit,
-    private val onGap: suspend () -> Unit,                                // triggers delta pull
-) {
-    private val ws = client.newBuilder().pingInterval(20, TimeUnit.SECONDS).build()
-    private var socket: WebSocket? = null
-    private var job: Job? = null
-
-    fun start() { if (job?.isActive == true) return; job = scope.launch { loop() } }
-    fun stop() { job?.cancel(); socket?.close(1000, null); socket = null }
-
-    private suspend fun loop() {
-        var attempt = 0
-        while (currentCoroutineContext().isActive) {
-            val closed = CompletableDeferred<Unit>()
-            val after = lastEventId()
-            val req = Request.Builder().url(url + (after?.let { "?after=$it" } ?: "")).build()
-            socket = ws.newWebSocket(req, object : WebSocketListener() {
-                override fun onOpen(w: WebSocket, r: Response) { attempt = 0; scope.launch { onGap() } }
-                override fun onMessage(w: WebSocket, text: String) { scope.launch { onEvent(text) } }
-                override fun onClosed(w: WebSocket, code: Int, reason: String) { closed.complete(Unit) }
-                override fun onFailure(w: WebSocket, t: Throwable, r: Response?) { closed.complete(Unit) }
-            })
-            closed.await()
-            attempt++
-            delay(Random.nextLong(0, minOf(60_000L, 1_000L shl minOf(attempt, 6)) + 1))
-        }
-    }
-}
+// Shared client: okHttp.newBuilder().pingInterval(20, SECONDS). Run only while app is STARTED.
+// loop: open ws "$url?after=${lastEventId()}" -> onOpen: attempt = 0, trigger delta pull (catch-up)
+//       onMessage: dedupe by event id, upsert into Room or kick SyncEngine for that collection
+//       onClosed/onFailure: complete a CompletableDeferred; then
+//       delay(Random.nextLong(0, min(60_000, 1_000L shl min(attempt++, 6)) + 1)) and reconnect
+// Auth close code (e.g. 4401): refresh token once, then reconnect. stop() on account switch / sign-out.
 ```
 
-### A.10 Tests (MockWebServer: single-flight + idempotency)
+### A.10 Test (MockWebServer: idempotency key reused across retries)
 
 ```kotlin
 @Test fun `retries POST with same idempotency key`() = runTest {
     server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
     server.enqueue(MockResponse().setBody("""{"id":"t1","title":"a","done":false,"version":1,"updatedAt":"x"}"""))
-    val key = IdempotencyKey("k-1")
-    withRetry(json, idempotent = true) { api.create("t1", TaskDto("t1", "a", false, 0, ""), key) }
-    val k1 = server.takeRequest().getHeader("Idempotency-Key")
-    val k2 = server.takeRequest().getHeader("Idempotency-Key")
-    assertEquals("k-1", k1); assertEquals(k1, k2)
+    withRetry(json, idempotent = true) { api.create("t1", TaskDto("t1", "a", false, 0, ""), IdempotencyKey("k-1")) }
+    assertEquals("k-1", server.takeRequest().getHeader("Idempotency-Key"))
+    assertEquals("k-1", server.takeRequest().getHeader("Idempotency-Key"))
 }
-
-@Test fun `concurrent 401s trigger one refresh`() = runTest {
-    server.dispatcher = object : Dispatcher() {
-        override fun dispatch(r: RecordedRequest) = when {
-            r.path == "/token" -> MockResponse().setBody("""{"accessToken":"new","refreshToken":"r2"}""")
-            r.getHeader("Authorization") == "Bearer new" -> MockResponse().setBody("""{"changes":[],"deletes":[],"nextCursor":null,"hasMore":false}""")
-            else -> MockResponse().setResponseCode(401)
-        }
-    }
-    coroutineScope { repeat(20) { launch(Dispatchers.IO) { api.pull(null) } } }
-    assertEquals(1, server.requestsTo("/token"))   // helper counting recorded paths
-}
+// Single-flight: dispatcher returns 401 unless "Bearer new"; launch 20 calls; assert exactly one
+// recorded request had path "/token" (count paths via server.takeRequest() in a loop of server.requestCount).
 ```
