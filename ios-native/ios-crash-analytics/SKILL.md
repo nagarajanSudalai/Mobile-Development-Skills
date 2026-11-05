@@ -582,6 +582,8 @@ final class Telemetry {
         // consent is deliberately NOT touched
     }
 
+    func setCrashKey(_ key: String, _ value: String) { crash.forEach { $0.setKey(key, value) } }
+
     func flushAll() async { for s in sinks { await s.flush() } }
 }
 ```
@@ -834,7 +836,7 @@ extension Telemetry {
     func onAccountActivated(opaqueUserId: String, portalId: String?, accountCount: Int, isLogin: Bool) async {
         await identify(userId: opaqueUserId, portalId: portalId)
         breadcrumb("account activated", category: "auth")
-        setCrashKeys(["account_count": "\(accountCount)"])
+        setCrashKey("account_count", "\(accountCount)")
         track(isLogin ? .userLoggedIn(method: "password") : .accountSwitched(accountCount: accountCount))
     }
 
@@ -848,11 +850,6 @@ extension Telemetry {
     func onAllSignedOut() async {
         breadcrumb("signed out all", category: "auth")
         await resetIdentity()
-    }
-
-    private func setCrashKeys(_ keys: [String: String]) {
-        // CrashReporter fan-out for arbitrary keys
-        for (k, v) in keys { breadcrumb("\(k)=\(v)", category: "keys") }
     }
 }
 
