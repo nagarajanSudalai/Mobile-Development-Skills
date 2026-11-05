@@ -261,30 +261,22 @@ See **react-native-revenuecat-iap** / **react-native-in-app-purchase**.
 
 | # | Scenario | Expected |
 |---|---|---|
-| M1 | Add second account | Fresh login (no SSO auto-login), new session, switcher shows both |
-| M2 | Add same account again | Detected; tokens updated; no duplicate entry |
+| M1–M2 | Add second account / same account again | Fresh login (no SSO auto-login), switcher shows both / duplicate detected, tokens updated, no new entry |
 | M3 | Add account in another region | Its requests go to its base URL; A's still to A's |
 | M4 | Switch A → B | Overlay; no A data visible at any frame; B lands in its last portal; back button doesn't reach A's screens |
 | M5 | Switch mid-request (slow A request) | A request aborted; response never written into B's cache/store |
 | M6 | Switch during unsaved draft | Prompt or draft saved per portal; restored on return |
 | M7 | Kill app mid-switch | Relaunch into a consistent account (A or B), never a mix |
 | M8 | Portal switch P1 → P2 | Portal data reset; account profile not refetched; header = P2 |
-| M9 | Portal revoked while viewing it | Message; moved to another portal; P1 cache removed |
-| M10 | Role downgraded mid-session | Admin UI disappears; actions fail gracefully |
-| M11 | Zero portals after login | Empty state with create/request |
-| M12 | 200 portals | Searchable picker, recent first, smooth scroll |
+| M9–M10 | Portal revoked while viewing it / role downgraded | Message, moved to another portal, P1 cache removed / admin UI disappears, actions fail gracefully |
+| M11–M12 | Zero portals / 200 portals | Empty state with create/request / searchable picker, recent first |
 | M13 | Access token expiry on A, many parallel requests | One refresh call; all requests retried once |
-| M14 | Refresh token revoked on inactive B | B marked needsReauth; A unaffected; badge in switcher |
-| M15 | Refresh token revoked on active A | Banner/re-auth; other accounts kept; can switch away |
-| M16 | Push for inactive account, tapped (warm) | Switch to that account+portal, open the route |
-| M17 | Push for inactive account, tapped (cold start) | Registry loaded, switch, route opened once |
+| M14–M15 | Refresh token revoked on inactive B / active A | Only that account marked needsReauth (badge in switcher / re-auth banner); others kept, can switch away |
+| M16–M17 | Push for inactive account, tapped (warm / cold start) | Registry loaded, switch to that account+portal, route opened once |
 | M18 | Push for inactive portal of active account | Portal switch, route opened |
-| M19 | Push for removed account | Ignored; server unregister attempted |
-| M20 | Foreground push for other account | Banner labelled with account; active data untouched |
-| M21 | Deep link to portal of inactive account | Confirmation, then switch + navigate |
-| M22 | Deep link to portal no account has | No-access screen; "Add account" preserves link |
-| M23 | Sign out active (2 accounts) | Moves to the other; removed account's files/MMKV/keychain gone |
-| M24 | Sign out last account | Logged-out root; RevenueCat logOut; push unregistered |
+| M19–M20 | Push for removed account / foreground push for other account | Ignored + unregister attempted / banner labelled with account, active data untouched |
+| M21–M22 | Deep link to portal of inactive account / of no account | Confirm, switch + navigate / no-access screen, "Add account" preserves link |
+| M23–M24 | Sign out active (2 accounts) / last account | Moves to the other, removed account's files/MMKV/keychain gone / logged-out root, RevenueCat logOut, push unregistered |
 | M25 | Sign out offline | Local wipe immediate; revoke retried later |
 | M26 | Reinstall app (iOS) | No auto sign-in from leftover Keychain items |
 | M27 | Android backup restore to new device | No crash; accounts require login; stale data wiped |

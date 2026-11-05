@@ -102,8 +102,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 ### 3.3 Fingerprints
 
 - [ ] Include the **SHA-256 of the Play App Signing key** (Play Console → Test and release → App integrity → App signing; the console also shows a ready-made Digital Asset Links JSON). With Play App Signing, **the key on users' devices is Google's, not your upload key** — the most common "works in debug/internal, broken in production" cause.
-- [ ] Also include the **upload key** (internal app sharing / locally installed release builds) and optionally the **debug key** for dev (or host a separate statement for `com.example.app.debug`). One statement per **package name** (flavors with `applicationIdSuffix` need their own entry). Get local fingerprints: `./gradlew signingReport` or `keytool -list -v -keystore release.jks -alias upload`.
-- [ ] Key rotation (Play signing key upgrade): add the new fingerprint **before** rollout; keep old until no installs use it. Other stores (Samsung, Huawei, sideload) re-sign with their own keys → add those fingerprints or accept that links won't verify there.
+- [ ] Also include the **upload key** (internal app sharing / locally installed release builds) and optionally the **debug key** for dev (or host a separate statement for `com.example.app.debug`). One statement per **package name** (flavors with `applicationIdSuffix` need their own entry). Get local fingerprints: `./gradlew signingReport` or `keytool -list -v -keystore release.jks -alias upload`. Key rotation (Play signing key upgrade): add the new fingerprint **before** rollout; keep old until no installs use it. Other stores (Samsung, Huawei, sideload) re-sign with their own keys → add those fingerprints or accept that links won't verify there.
 
 ### 3.4 Validation
 
@@ -127,8 +126,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 - [ ] Single entry activity (`MainActivity`) with `android:exported="true"` and `android:launchMode="singleTop"` (or `singleTask` if you must guarantee one instance; understand it changes task behaviour). `standard` launch mode + links = duplicate activities stacked on top of each other.
 - [ ] Separate `<intent-filter android:autoVerify="true">` for https links: `ACTION_VIEW`, categories `DEFAULT` **and** `BROWSABLE`, `scheme="https"` (add `http` only if you really have http links — it must also verify), `host`, and path elements.
 - [ ] **`<data>` elements in one filter are combined as a cross-product** (every scheme × every host × every path). Split unrelated hosts/paths into separate filters so you don't accidentally claim `www.example.com/anything` or a custom scheme with an https host.
-- [ ] Prefer **`pathPrefix`** / `pathPattern` / `pathAdvancedPattern` (API 31+) over claiming the whole host. Claim only paths the app can render; everything else (blog, help, legal, checkout on web) must stay in the browser. Custom scheme filter in a **separate** filter, without `autoVerify`. Don't put link filters on non-launcher activities you'd then need to coordinate; route everything through the single activity.
-- [ ] targetSdk 33+: intents from other apps must match a declared filter exactly (action/category/data), so explicitly declare everything you expect.
+- [ ] Prefer **`pathPrefix`** / `pathPattern` / `pathAdvancedPattern` (API 31+) over claiming the whole host. Claim only paths the app can render; everything else (blog, help, legal, checkout on web) must stay in the browser. Custom scheme filter in a **separate** filter, without `autoVerify`. Don't put link filters on non-launcher activities you'd then need to coordinate; route everything through the single activity. targetSdk 33+: intents from other apps must match a declared filter exactly (action/category/data), so explicitly declare everything you expect.
 
 ### 4.2 Gradle / Navigation
 
@@ -139,8 +137,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 ### 4.3 Activity handling
 
 - [ ] In `onCreate`: handle `intent` **only when `savedInstanceState == null`** and not `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`.
-- [ ] Override `onNewIntent(intent)` (or `addOnNewIntentListener` in `ComponentActivity`), call `setIntent(intent)` and route it. Mark an intent consumed (e.g. remove data / set an extra) after handling so configuration changes and `recreate()` don't replay it.
-- [ ] Route **after** the app is ready (session restored, DI graph built, nav graph set) — buffer the link in the ViewModel until then. Don't block the splash screen on network for routing. If you use `installSplashScreen().setKeepOnScreenCondition`, cap the wait; a link must never freeze the splash.
+- [ ] Override `onNewIntent(intent)` (or `addOnNewIntentListener` in `ComponentActivity`), call `setIntent(intent)` and route it. Mark an intent consumed (e.g. remove data / set an extra) after handling so configuration changes and `recreate()` don't replay it. Route **after** the app is ready (session restored, DI graph built, nav graph set) — buffer the link in the ViewModel until then. Don't block the splash screen on network for routing. If you use `installSplashScreen().setKeepOnScreenCondition`, cap the wait; a link must never freeze the splash.
 
 ## 5. URL design
 
@@ -169,21 +166,18 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
 | Auth/result links (OAuth callback, email verification) | Deliver result to the waiting flow; no navigation push |
 
 - [ ] **External (cold or warm from another app) links**: build a **predictable stack** (start + parents + target); back from the target goes to the parent, not out of the app — unless product decides "back returns to the referrer" (then don't synthesize, and set nothing special; system back finishes the task back to the caller only if the activity was launched into the caller's task).
-- [ ] Navigation's own `handleDeepLink`: if the intent has `FLAG_ACTIVITY_NEW_TASK`, it **clears the task and builds the synthetic back stack** from the graph's start destinations; without it, it navigates within the current stack. Know which you're getting.
-- [ ] Use `TaskStackBuilder` / `NavDeepLinkBuilder` for **PendingIntents** (push, widgets) so the system creates a correct task when the app isn't running (§10, Appendix A.7). The "Up" button on a deep-linked screen must go to its logical parent, never close the app unexpectedly. Avoid `singleTask` + `taskAffinity` tricks unless you understand the Recents consequences; `singleTop` + in-app back stack control is usually enough.
+- [ ] Navigation's own `handleDeepLink`: if the intent has `FLAG_ACTIVITY_NEW_TASK`, it **clears the task and builds the synthetic back stack** from the graph's start destinations; without it, it navigates within the current stack. Know which you're getting. Use `TaskStackBuilder` / `NavDeepLinkBuilder` for **PendingIntents** (push, widgets) so the system creates a correct task when the app isn't running (§10, Appendix A.8). The "Up" button on a deep-linked screen must go to its logical parent, never close the app unexpectedly. Avoid `singleTask` + `taskAffinity` tricks unless you understand the Recents consequences; `singleTop` + in-app back stack control is usually enough.
 
 ## 7. App states
 
 ### 7.1 Cold / warm / foreground
 
-- [ ] Cold: parse in `onCreate`, hand to ViewModel, route once `AppState` is `Ready`. Warm: `onNewIntent` → same path. Test with the app in Recents and with the activity destroyed by "Don't keep activities". Foreground: link while the user is mid-task — apply §6.2 (modal dismissal, flow protection).
-- [ ] Links must be **idempotent**: processing twice (rotation, restore) must not create two orders/accept an invite twice. Stale intents: ignore `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`; optionally ignore links older than N minutes when restored.
+- [ ] Cold: parse in `onCreate`, hand to ViewModel, route once `AppState` is `Ready`. Warm: `onNewIntent` → same path. Test with the app in Recents and with the activity destroyed by "Don't keep activities". Foreground: link while the user is mid-task — apply §6.2 (modal dismissal, flow protection). Links must be **idempotent**: processing twice (rotation, restore) must not create two orders/accept an invite twice. Stale intents: ignore `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`; optionally ignore links older than N minutes when restored.
 
 ### 7.2 Before login / onboarding
 
 - [ ] Link requires auth and user is logged out → **store a pending link** (in memory + `SavedStateHandle`, and DataStore if login can span process death, e.g. email magic link or browser-based SSO), show login, **resume** after success.
-- [ ] Same for onboarding, consent (GDPR/ATT-equivalent prompts), forced update, and "select portal" screens — the pending link survives all of them.
-- [ ] Pending link has a **TTL** (e.g. 30 minutes – 24 hours) and is **single-use**; cleared on consume, on sign-out, and on explicit back-out of login. Only one pending link — newest wins. Public destinations (product page) should **not** require login; render a public preview and gate actions. If after login the link resolves to a different account than expected → §8. Never put the user on a blank screen while waiting: show the login screen with context ("Sign in to view your order").
+- [ ] Same for onboarding, consent (GDPR/ATT-equivalent prompts), forced update, and "select portal" screens — the pending link survives all of them. Pending link has a **TTL** (e.g. 30 minutes – 24 hours) and is **single-use**; cleared on consume, on sign-out, and on explicit back-out of login. Only one pending link — newest wins. Public destinations (product page) should **not** require login; render a public preview and gate actions. If after login the link resolves to a different account than expected → §8. Never put the user on a blank screen while waiting: show the login screen with context ("Sign in to view your order").
 
 ### 7.3 Links during modals and critical flows
 
@@ -195,8 +189,7 @@ Served at `https://<host>/.well-known/assetlinks.json` **for every host** in you
   - Target belongs to the active account/portal → navigate.
   - Belongs to another **signed-in** account/portal → **confirm**: "Switch to Acme workspace to view this task?" → run the account/portal switch flow → then navigate.
   - Belongs to no signed-in account → offer "Sign in to another account" with the pending link preserved.
-  - Unknown (server says 403/404) → generic "You don't have access / link not found" — **don't reveal** whether the item exists in another org.
-- [ ] Resolution may need an API call (`GET /links/resolve?url=`) when the path doesn't carry the account; show a lightweight loading screen, time out to a fallback. Never switch accounts **silently** from a link — a malicious link could otherwise move the user into an attacker-controlled account (account-confusion phishing). Invite links (`/invite/{code}`): accept into the **chosen** account, explicitly shown to the user.
+  - Unknown (server says 403/404) → generic "You don't have access / link not found" — **don't reveal** whether the item exists in another org. Resolution may need an API call (`GET /links/resolve?url=`) when the path doesn't carry the account; show a lightweight loading screen, time out to a fallback. Never switch accounts **silently** from a link — a malicious link could otherwise move the user into an attacker-controlled account (account-confusion phishing). Invite links (`/invite/{code}`): accept into the **chosen** account, explicitly shown to the user.
 
 ## 9. Deferred deep links (vendor-neutral)
 
@@ -221,8 +214,7 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 
 ### 9.3 Firebase Dynamic Links migration (shut down 25 Aug 2025)
 
-- [ ] Inventory every FDL link: printed QR codes, emails, partner integrations, `*.page.link` and custom-domain FDL links. Old `page.link` links **no longer resolve** — reprint/replace what you can; for custom domains you still control, serve redirects to the new links.
-- [ ] Replace with: verified App Links on your domain + web landing page + Play Install Referrer for deferred links (+ any vendor meeting §9.2). Remove the `firebase-dynamic-links` dependency and `FirebaseDynamicLinks.getInstance().getDynamicLink(intent)` calls; route `intent.data` through your parser. Map FDL params (`link=`, `apn`, `afl`, `utm_*`) to your new URL design; keep the parser accepting old long-link query shapes if any are still reachable via your redirects.
+- [ ] Inventory every FDL link: printed QR codes, emails, partner integrations, `*.page.link` and custom-domain FDL links. Old `page.link` links **no longer resolve** — reprint/replace what you can; for custom domains you still control, serve redirects to the new links. Replace with: verified App Links on your domain + web landing page + Play Install Referrer for deferred links (+ any vendor meeting §9.2). Remove the `firebase-dynamic-links` dependency and `FirebaseDynamicLinks.getInstance().getDynamicLink(intent)` calls; route `intent.data` through your parser. Map FDL params (`link=`, `apn`, `afl`, `utm_*`) to your new URL design; keep the parser accepting old long-link query shapes if any are still reachable via your redirects.
 - [ ] Email verification / passwordless sign-in links that used FDL (Firebase Auth) need the current Firebase Auth replacement (Hosting-based links) — check current Firebase docs.
 
 ### 9.4 Deferred link app behaviour
@@ -241,8 +233,7 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 ## 11. Fallbacks
 
 - [ ] **App not installed**: the https URL must serve a real web page (content or landing page with Play Store link carrying `referrer`, §9).
-- [ ] **Unknown path** (`DeepLink.Unknown`): open the app at Home with a gentle message, or open the URL in a **Custom Tab** if it's a web-only page on your domain. Never a crash, never a blank screen. **Expired / revoked** (invite used, offer ended): dedicated screen with explanation and a next action. **Removed routes** after an app update: keep parser support for old paths and map them to new destinations; maintain a test fixture of every link ever shipped. **Not found / no access** (API 404/403 after navigating): detail screen shows a not-found state with a way back — not an infinite spinner.
-- [ ] **Older app version** receiving a link for a feature it doesn't have: `Unknown` → Home + "Update the app to open this" with Play Store link (optionally use in-app updates). **Feature flag off / region unavailable**: graceful screen, not a crash. Links your app claims but shouldn't (over-broad filter) → narrow the filter; as a stopgap open them in a Custom Tab.
+- [ ] **Unknown path** (`DeepLink.Unknown`): open the app at Home with a gentle message, or open the URL in a **Custom Tab** if it's a web-only page on your domain. Never a crash, never a blank screen. **Expired / revoked** (invite used, offer ended): dedicated screen with explanation and a next action. **Removed routes** after an app update: keep parser support for old paths and map them to new destinations; maintain a test fixture of every link ever shipped. **Not found / no access** (API 404/403 after navigating): detail screen shows a not-found state with a way back — not an infinite spinner. **Older app version** receiving a link for a feature it doesn't have: `Unknown` → Home + "Update the app to open this" with Play Store link (optionally use in-app updates). **Feature flag off / region unavailable**: graceful screen, not a crash. Links your app claims but shouldn't (over-broad filter) → narrow the filter; as a stopgap open them in a Custom Tab.
 
 ## 12. Security
 
@@ -250,8 +241,7 @@ Goal: user taps a link, doesn't have the app, installs from Play, first launch o
 - [ ] **No destructive or state-changing action from a link alone**: links open a screen; the user confirms (pay, delete, transfer, accept invite, change email, unsubscribe-with-side-effects). No `GET`-style "/delete?id=".
 - [ ] **Open redirect**: never load a URL from a param (`?next=https://evil.com`, `?url=`) into a WebView or Custom Tab without an allowlist of your hosts. Never forward link params into a WebView with JavaScript bridges (`addJavascriptInterface`).
 - [ ] Don't accept file/content URIs, `intent:` URIs or nested `Intent` extras from links (intent redirection — Play's security scanner flags `getParcelableExtra<Intent>()` → `startActivity`).
-- [ ] **Custom scheme hijacking**: another app can register your scheme → never send secrets (auth codes without PKCE, tokens, magic-link codes) via custom schemes; use verified https or PKCE.
-- [ ] No **tokens, emails, or PII** in URLs (they end up in logs, analytics, referrers, browser history). Magic-link/email-verify tokens: single-use, short TTL, bound to the requesting device/session where possible, exchanged server-side. Account-scoped links never switch accounts silently (§8). Keep other activities **`exported="false"`**; only the entry activity is exported. Rate-limit and log suspicious resolution failures server-side. `PendingIntent` for push/widgets: `FLAG_IMMUTABLE` + explicit component.
+- [ ] **Custom scheme hijacking**: another app can register your scheme → never send secrets (auth codes without PKCE, tokens, magic-link codes) via custom schemes; use verified https or PKCE. No **tokens, emails, or PII** in URLs (they end up in logs, analytics, referrers, browser history). Magic-link/email-verify tokens: single-use, short TTL, bound to the requesting device/session where possible, exchanged server-side. Account-scoped links never switch accounts silently (§8). Keep other activities **`exported="false"`**; only the entry activity is exported. Rate-limit and log suspicious resolution failures server-side. `PendingIntent` for push/widgets: `FLAG_IMMUTABLE` + explicit component.
 
 ## 13. Analytics
 
@@ -621,15 +611,12 @@ import androidx.navigation.NavOptionsBuilder
 import kotlinx.serialization.Serializable
 
 // Type-safe routes (Navigation 2.8+)
-@Serializable data object HomeRoute
-@Serializable data object OrdersRoute
+@Serializable data object HomeRoute; @Serializable data object OrdersRoute; @Serializable data object LoginRoute
 @Serializable data class OrderRoute(val orderId: String)
 @Serializable data class ProductRoute(val productId: String, val tab: String? = null)
 @Serializable data class TasksRoute(val portalSlug: String)
 @Serializable data class TaskRoute(val portalSlug: String, val taskId: String)
-@Serializable data class InviteRoute(val code: String)
-@Serializable data class PaywallRoute(val offerId: String)
-@Serializable data object LoginRoute
+@Serializable data class InviteRoute(val code: String); @Serializable data class PaywallRoute(val offerId: String)
 
 /** Minimal views of app state the router needs — implemented by the session layer. */
 interface AuthState { val isSignedIn: Boolean; val isOnboarded: Boolean }
