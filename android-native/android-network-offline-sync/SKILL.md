@@ -703,6 +703,7 @@ class OutboxProcessor @Inject constructor(
 
     sealed interface RunResult { data object Done : RunResult; data object RetryLater : RunResult; data object NeedsReauth : RunResult }
 
+    @Suppress("UNREACHABLE_CODE")
     suspend fun drain(): RunResult = mutex.withLock {
         db.outbox().resetInFlight()                                  // crash recovery: resend with same key
         val skipped = mutableSetOf<Long>()
@@ -735,7 +736,6 @@ class OutboxProcessor @Inject constructor(
                 }
             }
         }
-        @Suppress("UNREACHABLE_CODE") RunResult.Done
     }
 
     private suspend fun nextUnblocked(skipped: Set<Long>): OutboxEntry? {
