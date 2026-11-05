@@ -89,7 +89,7 @@ Write a **link spec** before coding:
 - [ ] **No redirects** of any kind (not `http→https`, not `apex→www`, not to a CDN bucket). Each host is verified separately: `example.com` and `www.example.com` both need the file and both need an entitlement entry (or use `applinks:*.example.com` wildcard, which does **not** cover the apex).
 - [ ] `Content-Type: application/json` (recommended; verify). Not signed (signing was required only before iOS 9).
 - [ ] Uncompressed size within Apple's limit (historically 128 KB — verify). Keep it small: use wildcard components, not one entry per URL.
-- [ ] Reachable **without auth, geo-blocking, bot protection, or WAF challenge**. Apple's CDN fetches from its own IP ranges — allowlist them or exempt the path. A Cloudflare-style JS challenge on `/.well-known/` breaks every install.
+- [ ] Reachable **without auth, geo-blocking, bot protection, or WAF challenge**. Apple's CDN fetches from its own IP ranges — allowlist them or exempt the path. A bot-protection JS challenge on `/.well-known/` breaks every install.
 - [ ] Return **200**, not 404/403, for each associated host, including staging hosts used by internal builds.
 
 ### 3.2 Apple CDN caching (iOS 14+)
@@ -332,7 +332,7 @@ curl -s  https://app-site-association.cdn-apple.com/a/v1/example.com | python3 -
 3. **Router tests**: `DeepLink` → expected `(tab, path, sheet)` state; same-destination dedupe.
 4. **UI tests** (XCUITest): `XCUIApplication().open(url)` (iOS 16.4+, verify) or `XCUIDevice.shared.system.open(_:)` for cold/warm link handling; `launchArguments` to simulate states.
 5. **Hosting checks in CI** (AASA 200/no redirect/valid JSON/expected appIDs).
-6. **Manual device matrix** with production AASA via CDN: Mail, Gmail, Messages, Notes, Slack/social in-app browsers, Camera QR, Safari cross-domain.
+6. **Manual device matrix** with production AASA via CDN: Mail, Gmail, Messages, Notes, messaging/social in-app browsers, Camera QR, Safari cross-domain.
 
 ### 14.3 Scenario matrix
 
