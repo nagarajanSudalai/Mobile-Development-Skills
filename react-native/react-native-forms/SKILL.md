@@ -54,7 +54,7 @@ Find out from the codebase, or ask:
 - **Presentation**: pushed screen, native modal / `formSheet`, `@gorhom/bottom-sheet` or `@expo/ui` BottomSheet, or inline on a tab. This decides which dismiss gestures R2 has to block.
 - **Create or edit**: in edit mode, prefill and track dirty state (§8). In create mode, think about drafts.
 - **Submit contract**: one endpoint or several, idempotency key, server-side field error shape (`{ errors: { email: ["taken"] } }`), timeout. See **react-native-network-offline-sync**.
-- **Offline**: block submit with a message, or queue it (then the HUD is replaced by a "Saved, will sync" toast)?
+- **Offline**: block submit with the R3 offline alert (native alert + Retry), or queue it (then the HUD is replaced by a "Saved, will sync" toast)?
 - **Environment**: Expo managed / dev client / bare, RN version, New Architecture, React Navigation vs Expo Router version, RHF / zod / resolvers versions, and whether keyboard-controller is installed.
 - **Platforms**: iOS, Android, web (on react-native-web, `Modal` and `BackHandler` behave differently).
 
