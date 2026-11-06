@@ -323,8 +323,7 @@ Adjust for your deployment target (`ObservableObject` instead of `@Observable` b
 ### A.1 Form state model and validation helpers
 
 ```swift
-import Foundation
-import Observation
+import Foundation; import Observation
 
 enum ProfileField: String, CaseIterable, Hashable, Sendable {
     case name, email, phone, bio            // visual order = CaseIterable order
@@ -336,18 +335,14 @@ struct ProfileValues: Equatable, Sendable {
 }
 
 enum Validator {
-    static func required(_ s: String, _ label: String) -> String? {
-        s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "\(label) is required" : nil
-    }
+    static func required(_ s: String, _ label: String) -> String? { s.isEmpty ? "\(label) is required" : nil }
+    static func maxLength(_ s: String, _ n: Int) -> String? { s.count > n ? "Maximum \(n) characters" : nil }
     static func email(_ s: String) -> String? {
-        let ok = s.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil
-        return ok ? nil : "Enter a valid email address"
+        s.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil
+            ? nil : "Enter a valid email address"
     }
-    static func maxLength(_ s: String, _ n: Int) -> String? {
-        s.count > n ? "Maximum \(n) characters" : nil
-    }
-    static func phone(_ digits: String) -> String? {
-        digits.isEmpty || (8...15).contains(digits.count) ? nil : "Enter a valid phone number"
+    static func phone(_ d: String) -> String? {
+        d.isEmpty || (8...15).contains(d.count) ? nil : "Enter a valid phone number"
     }
 }
 
@@ -356,15 +351,11 @@ final class ProfileFormModel {
     var values = ProfileValues()
     private(set) var baseline = ProfileValues()
     var errors: [ProfileField: String] = [:]
-    var formError: String?
-    /// R3: submit-time alert (client or server validation). Set → `.alert` shows; first field focused on OK.
-    var submitAlert: SubmitAlert?
-    private var touched: Set<ProfileField> = []
+    var submitAlert: SubmitAlert?          // R3: submit-time native alert (client or server)
     var shakeCount: [ProfileField: Int] = [:]
     private var submittedOnce = false
 
     var isDirty: Bool { values != baseline }
-
     func load(_ v: ProfileValues) { values = v; baseline = v; errors = [:] }
     func markSaved() { baseline = values }
 
@@ -383,24 +374,19 @@ final class ProfileFormModel {
         }
     }
 
-    /// Blur: validate only fields the user touched.
-    func didBlur(_ f: ProfileField) {
-        touched.insert(f)
+    func didBlur(_ f: ProfileField) {      // blur: inline validation only
         normalize()
         errors[f] = error(for: f)
         if errors[f] != nil { shakeCount[f, default: 0] += 1 }   // R3 inline shake, never an alert
     }
 
-    /// While typing: only clear errors, never add new ones (unless already submitted).
     func didEdit(_ f: ProfileField) {
         if errors[f] != nil || submittedOnce { errors[f] = error(for: f) }
     }
 
-    /// Submit: validate everything; returns first invalid field in visual order.
-    func validateAll() -> ProfileField? {
+    func validateAll() -> ProfileField? {  // submit: returns first invalid field in visual order
         submittedOnce = true
         normalize()
-        formError = nil
         for f in ProfileField.allCases { errors[f] = error(for: f) }
         return ProfileField.allCases.first { errors[$0] != nil }
     }
@@ -412,13 +398,11 @@ final class ProfileFormModel {
             if let f = ProfileField(rawValue: key) { errors[f] = msgs.first }
             else { unknown.append(contentsOf: msgs) }
         }
-        formError = unknown.isEmpty ? nil : unknown.joined(separator: "\n")
         let first = ProfileField.allCases.first { errors[$0] != nil }
         presentSubmitAlert(first: first, extra: unknown)      // R3: alert + inline
         return first
     }
 
-    /// R3: build a concise native-alert message from current inline errors.
     func presentSubmitAlert(first: ProfileField?, extra: [String] = []) {
         let lines = ProfileField.allCases.compactMap { errors[$0] } + extra
         guard !lines.isEmpty else { return }
@@ -429,17 +413,8 @@ final class ProfileFormModel {
     }
 }
 
-struct SubmitAlert: Identifiable, Equatable {
-    let id = UUID()
-    let title: String
-    let message: String
-    let focusOnDismiss: ProfileField?
-}
-
-enum FormSubmitError: Error {
-    case fieldErrors([String: [String]])
-    case message(String)
-}
+struct SubmitAlert: Identifiable { let id = UUID(); let title, message: String; let focusOnDismiss: ProfileField? }
+enum FormSubmitError: Error { case fieldErrors([String: [String]]), message(String) }
 ```
 
 ### A.2 Ending editing (R1) for SwiftUI and UIKit
@@ -449,16 +424,13 @@ import UIKit
 
 @MainActor
 enum EditingEnder {
-    /// Forces any first responder (including UITextFields hosted by SwiftUI) to resign,
-    /// which commits marked text, formatters and end-editing callbacks.
-    static func endEditingEverywhere() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                        to: nil, from: nil, for: nil)
-    }
-
-    /// End editing, then let bindings / onChange / didEndEditing run before the model is read.
+    /// Resign any first responder (incl. SwiftUI-hosted UITextFields: commits marked text, formatters),
+    /// then let bindings / onChange / didEndEditing run before the model is read.
     static func endEditing(in view: UIView? = nil) async {
-        if let view { view.endEditing(true) } else { endEditingEverywhere() }
+        if let view { view.endEditing(true) } else {
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                            to: nil, from: nil, for: nil)
+        }
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(1))   // one more runloop turn (verify needed on your OS)
     }
@@ -477,11 +449,8 @@ final class FormSubmitter {
     private let hud: BlockingHUD
 
     init(hud: BlockingHUD = .shared) { self.hud = hud }
-
-    /// The ONLY entry point for any form action (R1 + R2).
-    /// - endEditing: closure that clears focus (e.g. `{ focus = nil }`) or ends UIKit editing.
-    /// - validate: returns false to stop before the HUD/network.
-    /// - action: the network work; throw `FormSubmitError` for field errors.
+    /// The ONLY entry point for any form action (R1 + R2). `validate` returning false stops before
+    /// HUD/network (and should raise the R3 alert); `action` throws `FormSubmitError` for field errors.
     func run(message: String = "Saving…",
              endEditing: @MainActor () -> Void,
              validate: @MainActor () -> Bool = { true },
@@ -490,13 +459,11 @@ final class FormSubmitter {
              onFailure: @escaping @MainActor (Error) -> Void = { _ in }) {
         guard !isRunning else { return }          // re-entrancy: ignore, don't queue
         isRunning = true                          // set synchronously, before any await
-
         endEditing()                              // R1 (SwiftUI focus = nil)
         task = Task { [weak self] in
             guard let self else { return }
             await EditingEnder.endEditing()       // R1 (responder resign + yield)
             guard validate() else { self.isRunning = false; return }
-
             let token = self.hud.show(message: message)   // R2
             var result: Result<Void, Error> = .success(())
             do { try await action() } catch { result = .failure(error) }
@@ -520,17 +487,14 @@ final class FormSubmitter {
 ### A.4 Blocking HUD (R2): overlay window + back blocking
 
 ```swift
-import SwiftUI
-import UIKit
+import SwiftUI; import UIKit
 
 @MainActor
 final class BlockingHUD {
     static let shared = BlockingHUD()
-
     struct Token: Hashable { let id = UUID(); let shownAt: ContinuousClock.Instant }
 
-    var minimumVisible: Duration = .milliseconds(500)
-    var spinnerDelay: Duration = .milliseconds(150)
+    var minimumVisible: Duration = .milliseconds(500), spinnerDelay: Duration = .milliseconds(150)
     private var window: UIWindow?
     private var active: Set<Token> = []
     private let state = HUDState()
@@ -556,9 +520,7 @@ final class BlockingHUD {
         }
         active.remove(token)
         guard active.isEmpty else { return }    // reference counted
-        state.visible = false
-        window?.isHidden = true
-        window = nil
+        state.visible = false; window?.isHidden = true; window = nil
         UIAccessibility.post(notification: .screenChanged, argument: nil)
     }
 
@@ -587,9 +549,7 @@ private struct HUDView: View {
         ZStack {
             // Full-screen hit target: absorbs every touch, incl. edge swipe and tab bar.
             Color.black.opacity(state.visible ? 0.25 : 0.001)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture {}
+                .ignoresSafeArea().contentShape(Rectangle()).onTapGesture {}
             if state.visible {
                 VStack(spacing: 12) {
                     ProgressView().controlSize(.large)
@@ -607,8 +567,7 @@ private struct HUDView: View {
 
 /// SwiftUI: disable back paths at the source too (defence in depth).
 struct BlocksBackWhileSubmitting: ViewModifier {
-    let isRunning: Bool
-    let isDirty: Bool
+    let isRunning: Bool, isDirty: Bool
     func body(content: Content) -> some View {
         content
             .navigationBarBackButtonHidden(isRunning)      // also disables swipe-back (verify)
@@ -624,7 +583,10 @@ struct Shake: ViewModifier {
         content.keyframeAnimator(initialValue: 0.0, trigger: trigger) { view, x in
             view.offset(x: reduceMotion ? 0 : x)
         } keyframes: { _ in
-            KeyframeTrack { for v in [-8.0, 8, -5, 5, 0] { LinearKeyframe(v, duration: 0.06) } }
+            KeyframeTrack {
+                LinearKeyframe(-8.0, duration: 0.06); LinearKeyframe(8.0, duration: 0.06)
+                LinearKeyframe(-4.0, duration: 0.06); LinearKeyframe(0.0, duration: 0.06)
+            }
         }
     }
 }
@@ -641,7 +603,7 @@ extension UIViewController {
 }
 ```
 
-UIKit-only apps can replace the `UIHostingController` with a plain `UIViewController` whose view is a full-bounds `UIView` with a `UIActivityIndicatorView` and `UILabel`; keep `accessibilityViewIsModal = true` and the window level.
+UIKit-only: swap the hosting controller for a plain VC (full-bounds view + `UIActivityIndicatorView`); keep `accessibilityViewIsModal` and the window level.
 
 ### A.5 Sample SwiftUI screen wiring everything
 
@@ -675,15 +637,10 @@ struct EditProfileScreen: View {
                         .submitLabel(.next)
                 }
                 field(.phone, "Phone (optional)") {
-                    TextField("Phone", text: $model.values.phone)
-                        .keyboardType(.phonePad).textContentType(.telephoneNumber)
+                    TextField("Phone", text: $model.values.phone).keyboardType(.phonePad).textContentType(.telephoneNumber)
                 }
                 field(.bio, "Bio (optional)") {
-                    TextField("Bio", text: $model.values.bio, axis: .vertical)
-                        .lineLimit(3...6).submitLabel(.done)
-                }
-                if let formError = model.formError {
-                    Text(formError).foregroundStyle(.red)
+                    TextField("Bio", text: $model.values.bio, axis: .vertical).lineLimit(3...6).submitLabel(.done)
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -695,16 +652,9 @@ struct EditProfileScreen: View {
         }
         .navigationTitle("Edit profile")
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save", action: submit).disabled(submitter.isRunning)
-            }
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel", action: attemptClose).disabled(submitter.isRunning)
-            }
-            ToolbarItemGroup(placement: .keyboard) {        // phone pad has no Return key
-                Spacer()
-                Button("Done") { focus = nil }
-            }
+            ToolbarItem(placement: .confirmationAction) { Button("Save", action: submit).disabled(submitter.isRunning) }
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: attemptClose).disabled(submitter.isRunning) }
+            ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { focus = nil } }  // phone pad
         }
         .modifier(BlocksBackWhileSubmitting(isRunning: submitter.isRunning, isDirty: model.isDirty))
         .navigationBarBackButtonHidden(true)                // custom Cancel handles discard prompt
@@ -715,13 +665,11 @@ struct EditProfileScreen: View {
         .alert(model.submitAlert?.title ?? "", isPresented: Binding(
                 get: { model.submitAlert != nil }, set: { if !$0 { model.submitAlert = nil } }),
                presenting: model.submitAlert) { alert in
-            Button("OK") { if let f = alert.focusOnDismiss { focusError(f) } }   // focus AFTER dismiss
+            Button("OK") { focus = alert.focusOnDismiss }   // focus AFTER dismiss; alert announced itself
         } message: { Text($0.message) }
         .onAppear { if !model.isDirty { model.load(initial) } }
         .onDisappear { submitter.cancel() }
     }
-
-    // MARK: actions
 
     private func submit() {
         submitter.run(
@@ -738,11 +686,10 @@ struct EditProfileScreen: View {
                 switch error {
                 case FormSubmitError.fieldErrors(let map):
                     _ = model.apply(serverErrors: map)          // HUD already hidden → alert + inline
-                case FormSubmitError.message(let m):
-                    model.submitAlert = SubmitAlert(title: "Couldn't save", message: m, focusOnDismiss: nil)
                 default:
+                    let m = (error as? FormSubmitError).flatMap { if case .message(let m) = $0 { m } else { nil } }
                     model.submitAlert = SubmitAlert(title: "Couldn't save",
-                        message: "Check your connection and try again.", focusOnDismiss: nil)
+                        message: m ?? "Check your connection and try again.", focusOnDismiss: nil)
                 }
             })
     }
@@ -754,13 +701,7 @@ struct EditProfileScreen: View {
         else { submit() }                                   // last field Return → same wrapper
     }
 
-    private func attemptClose() {
-        if model.isDirty { showDiscard = true } else { dismiss() }
-    }
-
-    private func focusError(_ f: ProfileField) {
-        focus = f                                  // alert itself already announced the message
-    }
+    private func attemptClose() { if model.isDirty { showDiscard = true } else { dismiss() } }
 
     @ViewBuilder
     private func field<C: View>(_ f: ProfileField, _ label: String,
@@ -776,9 +717,8 @@ struct EditProfileScreen: View {
                 .modifier(Shake(trigger: model.shakeCount[f, default: 0]))
                 .accessibilityLabel(label)
                 .accessibilityValue(model.errors[f].map { "Error: \($0)" } ?? "")
-            if let err = model.errors[f] {
-                Label(err, systemImage: "exclamationmark.circle")
-                    .font(.footnote).foregroundStyle(.red)
+            if let err = model.errors[f] {        // R3 inline footer
+                Label(err, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.red)
             }
         }
         .id(f)
