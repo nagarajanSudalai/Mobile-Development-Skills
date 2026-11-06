@@ -324,17 +324,9 @@ Packages assumed (verify latest compatible versions): `cached_network_image`, `f
 
 ```dart
 // list_state.dart
-sealed class ListState<T> {
-  const ListState();
-}
-
-final class ListIdle<T> extends ListState<T> {
-  const ListIdle();
-}
-
-final class ListLoadingInitial<T> extends ListState<T> {
-  const ListLoadingInitial();
-}
+sealed class ListState<T> { const ListState(); }
+final class ListIdle<T> extends ListState<T> { const ListIdle(); }
+final class ListLoadingInitial<T> extends ListState<T> { const ListLoadingInitial(); }
 
 /// Data present; more pages may exist.
 final class ListLoaded<T> extends ListState<T> {
@@ -342,11 +334,7 @@ final class ListLoaded<T> extends ListState<T> {
   final List<T> items;
   final bool isRefreshing;
 }
-
-final class ListLoadingMore<T> extends ListState<T> {
-  const ListLoadingMore(this.items);
-  final List<T> items;
-}
+final class ListLoadingMore<T> extends ListState<T> { const ListLoadingMore(this.items); final List<T> items; }
 
 /// [items] empty => first-load error (full screen). Non-empty => footer/snackbar error.
 final class ListError<T> extends ListState<T> {
@@ -356,8 +344,7 @@ final class ListError<T> extends ListState<T> {
 }
 
 final class ListEndReached<T> extends ListState<T> {
-  const ListEndReached(this.items);
-  final List<T> items; // may be empty => empty state
+  const ListEndReached(this.items); final List<T> items; // may be empty => empty state
 }
 
 extension ListStateX<T> on ListState<T> {
@@ -381,9 +368,7 @@ import 'package:flutter/foundation.dart';
 import 'list_state.dart';
 
 class Page<T> {
-  const Page(this.items, this.nextCursor);
-  final List<T> items;
-  final String? nextCursor; // null => end
+  const Page(this.items, this.nextCursor); final List<T> items; final String? nextCursor; // null => end
 }
 
 typedef PageFetcher<T> = Future<Page<T>> Function({String? cursor, required int limit});
@@ -521,120 +506,13 @@ class Paginator<T, Id> extends ChangeNotifier {
 ### A.3 Shimmer skeleton (no package; respects reduced motion)
 
 ```dart
-// skeleton.dart
-import 'package:flutter/material.dart';
-
-class Shimmer extends StatefulWidget {
-  const Shimmer({super.key, required this.child});
-  final Widget child;
-  @override
-  State<Shimmer> createState() => _ShimmerState();
-}
-
-class _ShimmerState extends State<Shimmer> with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 1300));
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _c.stop();
-    } else if (!_c.isAnimating) {
-      _c.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final base = scheme.surfaceContainerHighest;
-    final highlight = Color.lerp(base, scheme.surface, 0.6)!;
-    if (MediaQuery.disableAnimationsOf(context)) {
-      return ColorFiltered(
-        colorFilter: ColorFilter.mode(base, BlendMode.srcIn),
-        child: widget.child,
-      );
-    }
-    return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: _c,
-        child: widget.child,
-        builder: (context, child) => ShaderMask(
-          blendMode: BlendMode.srcIn,
-          shaderCallback: (rect) => LinearGradient(
-            colors: [base, highlight, base],
-            stops: const [0.35, 0.5, 0.65],
-            begin: Alignment(-1.0 + 3 * _c.value - 1, 0),
-            end: Alignment(1.0 + 3 * _c.value - 1, 0),
-          ).createShader(rect),
-          child: child,
-        ),
-      ),
-    );
-  }
-}
-
-/// Mirrors [ItemRow]: 72 px tall, 56 px thumbnail, two text lines.
-class SkeletonRow extends StatelessWidget {
-  const SkeletonRow({super.key});
-  @override
-  Widget build(BuildContext context) {
-    Widget bar(double w, double h) => Container(
-          width: w,
-          height: h,
-          decoration: BoxDecoration(
-            color: Colors.white, // replaced by shader
-            borderRadius: BorderRadius.circular(4),
-          ),
-        );
-    return SizedBox(
-      height: ItemRow.extent,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(children: [
-          bar(56, 56),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [bar(180, 14), const SizedBox(height: 8), bar(120, 12)],
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-
-class SkeletonList extends StatelessWidget {
-  const SkeletonList({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Loading items',
-      child: ExcludeSemantics(
-        child: LayoutBuilder(builder: (context, c) {
-          final count = (c.maxHeight / ItemRow.extent).ceil() + 1;
-          return Shimmer(
-            child: Column(
-              children: List.generate(count, (_) => const SkeletonRow()),
-            ),
-          );
-        }),
-      ),
-    );
-  }
-}
-
-// (import ItemRow from list_screen.dart)
+// skeleton.dart — sketch (no package):
+// - Shimmer: StatefulWidget with a repeating AnimationController (~1.2 s) driving a ShaderMask
+//   LinearGradient sweep over its child; when MediaQuery.disableAnimationsOf(context) is true,
+//   render the child statically (no controller running).
+// - SkeletonList: ListView.builder of ~8 ItemRow-shaped placeholders (same extent/thumb size as
+//   ItemRow, grey rounded boxes), NeverScrollableScrollPhysics, wrapped in
+//   Semantics(label: 'Loading', excludeSemantics: true) and Shimmer.
 ```
 
 With `skeletonizer` instead: `Skeletonizer(enabled: true, child: ListView.builder(itemCount: 8, itemBuilder: (_, __) => ItemRow(item: Item.fake())))` — reuses the real row so the skeleton can never drift from the layout.
@@ -642,8 +520,7 @@ With `skeletonizer` instead: `Skeletonizer(enabled: true, child: ListView.builde
 ### A.4 Delayed loader (anti-flicker)
 
 ```dart
-import 'dart:async';
-import 'package:flutter/material.dart';
+import 'dart:async'; // Timer
 
 /// Shows [child] only if still mounted after [delay]; once shown, the parent
 /// should keep it for at least [minShow] (handled by DelayedSwitcher below).
@@ -677,19 +554,13 @@ For a minimum display time, have the controller record when loading became visib
 
 ```dart
 // list_screen.dart
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_slidable/flutter_slidable.dart';
-import 'list_state.dart';
-import 'paginator.dart';
-import 'skeleton.dart';
+// imports: cached_network_image, flutter/material, flutter/services, flutter_slidable,
+//          list_state.dart, paginator.dart, skeleton.dart
 
-class Item {
+class Item { // id, title, subtitle, thumbUrl, updatedAt
   const Item({required this.id, required this.title, required this.subtitle,
       required this.thumbUrl, required this.updatedAt});
-  final String id, title, subtitle, thumbUrl;
-  final DateTime updatedAt;
+  final String id, title, subtitle, thumbUrl; final DateTime updatedAt;
 }
 
 class ItemListScreen extends StatefulWidget {
@@ -723,11 +594,9 @@ class _ItemListScreenState extends State<ItemListScreen> {
       if (!mounted || !_scroll.hasClients) return;
       if (_scroll.position.maxScrollExtent <= 0) _p.loadMore();
     });
-    final err = _p.lastError;
-    if (err != null) {
+    if (_p.lastError != null) {
       _p.lastError = null;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
+      ScaffoldMessenger.of(context)..hideCurrentSnackBar()
         ..showSnackBar(const SnackBar(content: Text("Couldn't refresh. Showing saved items.")));
     }
   }
@@ -825,34 +694,8 @@ class _ItemListScreenState extends State<ItemListScreen> {
   }
 }
 
-class _Footer extends StatelessWidget {
-  const _Footer({required this.state, required this.onRetry});
-  final ListState<Item> state;
-  final VoidCallback onRetry;
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Center(
-        child: switch (state) {
-          ListLoadingMore() => const SizedBox.square(
-              dimension: 24,
-              child: CircularProgressIndicator.adaptive(strokeWidth: 2.5)),
-          ListError() => Semantics(
-              liveRegion: true,
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Text("Couldn't load more"),
-                TextButton(onPressed: onRetry, child: const Text('Retry')),
-              ]),
-            ),
-          ListEndReached() => Text("You're all caught up",
-              style: Theme.of(context).textTheme.bodySmall),
-          _ => const SizedBox.shrink(),
-        },
-      ),
-    );
-  }
-}
+// _Footer(state, onRetry): ListLoadingMore → 24px adaptive spinner; ListError → Semantics(liveRegion)
+// "Couldn't load more" + Retry TextButton; ListEndReached → "You're all caught up"; else SizedBox.shrink().
 
 class ItemRow extends StatelessWidget {
   const ItemRow({super.key, required this.item, required this.onDelete});
@@ -869,13 +712,9 @@ class ItemRow extends StatelessWidget {
         motion: const DrawerMotion(),
         extentRatio: 0.25,
         children: [
-          SlidableAction(
-            onPressed: (_) => onDelete(),
-            backgroundColor: Theme.of(context).colorScheme.error,
-            foregroundColor: Theme.of(context).colorScheme.onError,
-            icon: Icons.delete,
-            label: 'Delete',
-          ),
+          SlidableAction(onPressed: (_) => onDelete(), icon: Icons.delete, label: 'Delete',
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError),
         ],
       ),
       child: Semantics(
@@ -894,52 +733,13 @@ class ItemRow extends StatelessWidget {
     );
   }
 
-  void _showActions(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: ListTile(
-          leading: const Icon(Icons.delete),
-          title: const Text('Delete'),
-          onTap: () { Navigator.pop(ctx); onDelete(); },
-        ),
-      ),
-    );
-  }
+  // _showActions: showModalBottomSheet with a 'Delete' ListTile (pop, then onDelete()).
+  void _showActions(BuildContext context) {/* see comment */}
 }
 
-class _EmptyView extends StatelessWidget {
-  const _EmptyView();
-  @override
-  Widget build(BuildContext context) => const Center(
-        child: Padding(
-          padding: EdgeInsets.all(32),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.inbox_outlined, size: 64),
-            SizedBox(height: 12),
-            Text('No items yet', textAlign: TextAlign.center),
-          ]),
-        ),
-      );
-}
-
-class _ErrorView extends StatelessWidget {
-  const _ErrorView({required this.onRetry});
-  final VoidCallback onRetry;
-  @override
-  Widget build(BuildContext context) => Center(
-        child: Semantics(
-          liveRegion: true,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.cloud_off, size: 64),
-            const SizedBox(height: 12),
-            const Text("Couldn't load items. Check your connection."),
-            const SizedBox(height: 12),
-            FilledButton(onPressed: onRetry, child: const Text('Retry')),
-          ]),
-        ),
-      );
-}
+// _EmptyView: centered inbox icon + "No items yet".
+// _ErrorView(onRetry): Semantics(liveRegion) cloud_off icon + "Couldn't load items. Check your
+//   connection." + FilledButton Retry.
 ```
 
 Notes: `SliverFixedExtentList.builder` exists in recent Flutter; on older versions use `SliverFixedExtentList(itemExtent:, delegate: SliverChildBuilderDelegate(...))`.
@@ -947,11 +747,8 @@ Notes: `SliverFixedExtentList.builder` exists in recent Flutter; on older versio
 ### A.6 Thumbnail with display-size decode and stable cache key
 
 ```dart
-final thumbCache = CacheManager(Config(
-  'thumbs',
-  stalePeriod: const Duration(days: 7),
-  maxNrOfCacheObjects: 600,
-)); // from flutter_cache_manager
+final thumbCache = CacheManager(Config('thumbs',
+    stalePeriod: const Duration(days: 7), maxNrOfCacheObjects: 600)); // flutter_cache_manager
 
 class Thumbnail extends StatelessWidget {
   const Thumbnail({super.key, required this.item, required this.size});
@@ -985,26 +782,10 @@ class Thumbnail extends StatelessWidget {
   }
 }
 
-/// Warm the next few thumbnails (call after a page loads / as rows near view).
-void precacheThumbs(BuildContext context, Iterable<Item> upcoming, double size) {
-  final px = (size * MediaQuery.devicePixelRatioOf(context)).round();
-  for (final item in upcoming.take(6)) {
-    precacheImage(
-      ResizeImage(
-        CachedNetworkImageProvider(item.thumbUrl,
-            cacheKey: 'thumb-${item.id}-${item.updatedAt.millisecondsSinceEpoch}',
-            cacheManager: thumbCache),
-        width: px,
-      ),
-      context,
-    );
-  }
-}
-
-// App start, image-heavy apps only (measure first):
-// PaintingBinding.instance.imageCache
-//   ..maximumSize = 500
-//   ..maximumSizeBytes = 150 << 20;
+// precacheThumbs(context, upcoming, size): for the next ~6 items call precacheImage(
+//   ResizeImage(CachedNetworkImageProvider(url, cacheKey: <same key>, cacheManager: thumbCache),
+//   width: px), context). Image-heavy apps only (measure first): raise
+//   PaintingBinding.instance.imageCache maximumSize / maximumSizeBytes.
 ```
 
 Caveat: `memCacheWidth` on `CachedNetworkImage` wraps its provider in `ResizeImage` internally, so the precache call must use the same width for a memory-cache hit — verify against the installed version.
@@ -1012,31 +793,8 @@ Caveat: `memCacheWidth` on `CachedNetworkImage` wraps its provider in `ResizeIma
 ### A.7 Widget test sketch
 
 ```dart
-testWidgets('loads more exactly once and shows end footer', (tester) async {
-  var calls = 0;
-  final p = Paginator<Item, String>(
-    idOf: (i) => i.id,
-    fetch: ({cursor, required limit}) async {
-      calls++;
-      final start = cursor == null ? 0 : int.parse(cursor);
-      final items = List.generate(limit, (i) => fakeItem('${start + i}'));
-      return Page(items, start + limit >= 50 ? null : '${start + limit}');
-    },
-  );
-  await tester.pumpWidget(MaterialApp(
-    home: MediaQuery(
-      data: const MediaQueryData(disableAnimations: true),
-      child: ItemListScreen(paginator: p, deleteOnServer: (_) async {}),
-    ),
-  ));
-  await tester.pump(const Duration(milliseconds: 300));
-  expect(find.text('Item 0'), findsOneWidget);
-  await tester.drag(find.byType(CustomScrollView), const Offset(0, -5000));
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 100));
-  await tester.drag(find.byType(CustomScrollView), const Offset(0, -5000));
-  await tester.pumpAndSettle();
-  expect(calls, 2);
-  expect(find.text("You're all caught up"), findsOneWidget);
-});
+// Sketch: build a Paginator whose fake fetch returns 50 items in pages and counts calls; pump
+// ItemListScreen inside MaterialApp with MediaQueryData(disableAnimations: true); pump past the
+// 200 ms DelayedLoader; drag the CustomScrollView far twice; assert calls == 2 (no duplicate
+// load-more) and that "You're all caught up" is shown.
 ```

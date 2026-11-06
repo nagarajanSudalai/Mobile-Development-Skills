@@ -222,8 +222,7 @@ Write a **link spec** before coding:
 - [ ] When the gate clears (login success, onboarding done), the coordinator **replays** the pending link exactly once, then clears it.
 - [ ] One slot, last link wins. TTL (e.g. 10–30 min) so a link tapped yesterday doesn't hijack today's launch. Store in memory + `UserDefaults` only if it must survive the app being killed during sign-up (common for email-verification and invite flows); **never persist links containing tokens** beyond the TTL; prefer Keychain if they do.
 - [ ] Show context during the gate: "Sign in to view your order" / "Sign up to join Alex's group" (invite landing), not a generic login screen.
-- [ ] If the user **cancels** login or signs in to an account that can't access the target, drop the pending link and show a not-available state — don't loop.
-- [ ] Sign-out clears the pending link.
+- [ ] If the user **cancels** login or signs in to an account that can't access the target, drop the pending link and show a not-available state — don't loop. Sign-out clears the pending link.
 
 ### 7.3 Link during a modal or critical flow
 
@@ -290,7 +289,7 @@ Goal: user taps a link, does **not** have the app, installs from the App Store, 
 - [ ] **WebView with privileges** (JS bridge, auth cookies): never load a link-supplied URL in it unless host is allowlisted.
 - [ ] **Custom scheme hijacking**: another app can register `myapp://` and receive links meant for you (including OAuth codes and magic-link tokens). Never deliver tokens via custom schemes; use universal links or `ASWebAuthenticationSession`.
 - [ ] Magic-link / reset tokens: single-use, short TTL, bound to the device or session that requested them where feasible ("Open on the same device you requested from" with a fallback code), redeemed via POST, not logged.
-- [ ] Don't log full URLs with tokens in analytics/crash reports — redact query params by allowlist (Appendix A.6 `redactedForLogging`).
+- [ ] Don't log full URLs with tokens in analytics/crash reports — redact query params by allowlist (Appendix A.2 `redactedForLogging`).
 - [ ] Account confusion: links must never perform actions in whichever account happens to be active without checking ownership (section 8).
 - [ ] Rate-limit/abuse: a link that triggers a network call on open (resolve endpoint) must not be usable to spam the backend from many devices — standard server rate limits.
 
@@ -340,63 +339,48 @@ curl -s  https://app-site-association.cdn-apple.com/a/v1/example.com | python3 -
 |---|---|---|
 | D1 | Universal link, app not installed | Web page renders content; Smart App Banner shown |
 | D2 | Universal link, cold launch, signed in | Lands on destination with synthesized back stack; no flash of home → push cascade |
-| D3 | Universal link, warm, user on another tab | Tab switched, stack replaced, destination shown |
-| D4 | Custom scheme from widget | Same destination as equivalent https link |
-| D5 | Link while signed out, auth-required route | Login with context copy; after login lands on destination once |
-| D6 | Link while signed out, public route | Opens directly, no login |
-| D7 | Link during onboarding | Onboarding continues; destination after completion |
-| D8 | Pending link older than TTL | Dropped; normal home |
-| D9 | User cancels login | Pending link dropped; no loop |
-| D10 | Link for another signed-in account | Confirm switch → switch → destination |
-| D11 | Link for another portal in same account | Confirm portal switch → destination |
-| D12 | Link for no signed-in account | Add-account flow; destination after sign-in if access |
-| D13 | Link while sheet with unsaved draft open | Draft not lost: prompt or park |
-| D14 | Link while StoreKit purchase sheet up | Parked until sheet closes |
-| D15 | Same link tapped twice quickly | One navigation; no duplicate push |
-| D16 | Link to the screen already showing | Refresh in place; no duplicate |
-| D17 | Unknown path on associated domain | Safari VC or home + "update app" toast; no crash |
-| D18 | Malformed ID / injection in param | `.unsupported`; nothing loaded |
-| D19 | Content deleted / no access | Not-found / no-access state; Back works |
-| D20 | Expired invite / used reset token | Specific expired state with next action |
-| D21 | Email link via ESP click tracking | App opens (custom tracking domain) and lands correctly; click recorded |
-| D22 | Short marketing link | Resolved, routed; resolver timeout → web fallback |
-| D23 | QR code via Camera | App opens destination |
-| D24 | Link in social app in-app browser | Landing page "Open in app" works |
-| D25 | Push tap, cold launch | Destination shown (delegate set early) |
-| D26 | Push tap for inactive account | Account switch + destination |
-| D27 | Quick action cold and warm | Correct destination both ways |
-| D28 | Spotlight result / Handoff from Safari | Destination shown |
-| D29 | Fresh install from link (deferred) | Lands on destination or graceful home; never blocks onboarding |
-| D30 | Magic link on same device | Signed in; token redeemed once; second tap → "link used" |
-| D31 | OAuth callback | Handled by auth session only, never by router |
-| D32 | Destructive path (`/account/delete`) | Excluded from AASA / opens confirmation, never acts |
-| D33 | Offline cold launch with link | Destination screen offline state |
-| D34 | iPad, two windows | Routes in active window only |
-| D35 | User disabled universal links ("Open in Safari") | Web page usable; banner re-enables |
-| D36 | App Clip URL with full app installed | Full app handles same URL |
+| D3 | Universal link warm on another tab; custom scheme from widget | Tab switched, stack replaced; same destination as https form |
+| D4 | Signed out: auth-required route / public route | Login with context copy then destination once / opens directly |
+| D5 | Link during onboarding | Onboarding continues; destination after completion |
+| D6 | Pending link older than TTL; user cancels login | Dropped; normal home; no loop |
+| D7 | Link for another signed-in account or portal | Confirm switch → switch → destination |
+| D8 | Link for no signed-in account | Add-account flow; destination after sign-in if access |
+| D9 | Link while unsaved draft or StoreKit sheet open | Draft not lost: prompt or park until sheet closes |
+| D10 | Same link twice quickly; link to screen already showing | One navigation; refresh in place; no duplicate |
+| D11 | Unknown path on associated domain | Safari VC or home + "update app" toast; no crash |
+| D12 | Malformed ID / injection in param | `.unsupported`; nothing loaded |
+| D13 | Content deleted / no access; expired invite / used token | Not-found / no-access / expired state with next action; Back works |
+| D14 | Email link via ESP click tracking; short marketing link | App opens and lands correctly; click recorded; resolver timeout → web fallback |
+| D15 | QR code via Camera; link in social in-app browser | App opens destination; landing page "Open in app" works |
+| D16 | Push tap, cold launch; push for inactive account | Destination shown (delegate set early); account switch first if needed |
+| D17 | Quick action cold/warm; Spotlight / Handoff | Correct destination every way |
+| D18 | Fresh install from link (deferred) | Lands on destination or graceful home; never blocks onboarding |
+| D19 | Magic link on same device | Signed in; token redeemed once; second tap → "link used" |
+| D20 | OAuth callback | Handled by auth session only, never by router |
+| D21 | Destructive path (`/account/delete`) | Excluded from AASA / opens confirmation, never acts |
+| D22 | Offline cold launch with link | Destination screen offline state |
+| D23 | iPad, two windows | Routes in active window only |
+| D24 | User disabled universal links ("Open in Safari") | Web page usable; banner re-enables |
+| D25 | App Clip URL with full app installed | Full app handles same URL |
 
 ## 15. Common bugs to look for in review
 
-- Only `scene(_:continue:)` / `openURLContexts` implemented → links dropped on **cold launch** (`connectionOptions` ignored)
-- App-delegate URL methods implemented in a scene-based app → never called
+- Only `scene(_:continue:)` / `openURLContexts` implemented → links dropped on **cold launch** (`connectionOptions` ignored); app-delegate URL methods in a scene-based app → never called
 - `.onOpenURL` attached to a child view that isn't mounted at launch, or attached in several places → missed or double-handled links
 - AASA served with a redirect (`http→https`, apex→www), behind auth/WAF/bot challenge, with `.json` extension, 404 on `www`, or wrong Team ID
 - AASA updated after app release and expected to work immediately (CDN caching), or `mode=developer` entries expected to work in production
-- Wildcard `applinks:*.example.com` assumed to cover `example.com`
-- Broad `"/": "*"` capturing `/unsubscribe`, `/oauth/*`, `/help` → users trapped in the app
+- Wildcard `applinks:*.example.com` assumed to cover `example.com`; broad `"/": "*"` capturing `/unsubscribe`, `/oauth/*`, `/help` → users trapped in the app
 - Custom scheme used in emails/QR codes; tokens delivered via custom scheme (hijackable)
 - Each screen parsing URLs ad hoc; parser with side effects or network; no tests
 - Pushing route by route (`path.append` ×3 with animation) instead of assigning the full path; `navigationDestination` inside lazy containers
 - Modals not dismissed → navigation happens behind a sheet; or unsaved draft discarded silently
 - No back stack synthesis → Back exits to a blank root or the app's previous unrelated screen
-- Pending link never cleared → reopens on every launch; or lost when login screen replaces the root
-- Pending link persisted with token indefinitely in `UserDefaults`
+- Pending link never cleared (reopens every launch), lost when login replaces the root, or persisted with a token in `UserDefaults`
 - Link opens in the wrong account/portal because IDs collide across workspaces
 - Links that perform actions (accept invite, follow, delete) without confirmation
 - `?redirect=` param loaded in an authenticated WebView → open redirect / token theft
 - Email ESP click tracking breaking universal links unnoticed (tested only with raw URLs)
-- Magic-link GET consumes token (email scanner pre-fetch burns it)
-- Full URLs with tokens logged to analytics/crash reports
+- Magic-link GET consumes token (email scanner pre-fetch burns it); full URLs with tokens logged to analytics/crash reports
 - Deferred link lookup blocking first launch on a slow network
 - State restoration overriding the link on cold launch
 - String-concatenated URLs with unencoded IDs; `+` vs space mismatch with backend
@@ -409,7 +393,7 @@ When asked to **review/audit**:
 2. **Hosting report** — per domain: AASA URL status, redirects, content type, Apple CDN copy vs origin, appIDs, components, excludes
 3. **Checklist results** — sections 2–13 with ✅ Pass / ❌ Fail / ⚠️ Needs check and file:line
 4. **Critical issues first** (cold-launch drops, hijackable tokens, destructive actions from links, open redirects, wrong-account routing, broken hosting) with fix code
-5. **Testing gaps** — D1–D36 not covered
+5. **Testing gaps** — D1–D25 not covered
 
 When asked to **implement**: write the link spec, start from the Appendix (parser + tests first, then coordinator/pending store, then router wiring for the app's lifecycle), produce the AASA file and entitlements, delete unused parts (multi-account, App Clip, resolver), and list server/web dependencies (web pages for every route, resolve endpoint, AASA deploy) and OS-gated APIs used.
 
@@ -439,7 +423,6 @@ enum DeepLink: Hashable, Sendable {
     case unsupported(URL)
 
     enum ProductTab: String, Sendable { case overview, reviews }
-
     enum Access: Sendable { case `public`, requiresAuth, isAuth }
 
     var access: Access {
@@ -592,63 +575,11 @@ extension URL {
 ### A.3 Parser unit tests (Swift Testing)
 
 ```swift
-import Testing
-import Foundation
-@testable import App
-
-@Suite struct DeepLinkParserTests {
-    let parser = DeepLinkParser.live
-
-    @Test(arguments: [
-        ("https://example.com/", DeepLink.home),
-        ("https://example.com/p/123", .product(id: "123", tab: nil)),
-        ("https://www.example.com/p/123/", .product(id: "123", tab: nil)),
-        ("https://EXAMPLE.com/p/123-red-shoes?utm_source=mail", .product(id: "123", tab: nil)),
-        ("https://example.com/p/123?tab=reviews", .product(id: "123", tab: .reviews)),
-        ("https://example.com/p/123?tab=bogus", .product(id: "123", tab: nil)),
-        ("https://example.com/products/123", .product(id: "123", tab: nil)),   // legacy
-        ("myapp://p/123", .product(id: "123", tab: nil)),
-        ("https://example.com/orders/A1b2", .order(id: "A1b2")),
-        ("https://example.com/w/acme/projects/42", .project(portalID: "acme", projectID: "42")),
-        ("https://example.com/invite/abcdefghijklmnop", .invite(token: "abcdefghijklmnop")),
-        ("https://example.com/auth/magic?token=abcdefghijklmnopqr", .magicLink(token: "abcdefghijklmnopqr")),
-        ("myapp://settings/notifications", .notificationSettings),
-        ("https://go.example.com/offer/spring25", .offer(code: "SPRING25")),
-    ])
-    func parsesSupportedLinks(_ raw: String, _ expected: DeepLink) throws {
-        let url = try #require(URL(string: raw))
-        #expect(parser.parse(url) == expected)
-    }
-
-    @Test(arguments: [
-        "https://evil.com/p/123",                       // unknown host
-        "https://example.com.evil.com/p/123",           // suffix trick
-        "http://example.com/p/123",                     // not https
-        "otherapp://p/123",                             // other scheme
-        "https://example.com/p/",                       // missing id
-        "https://example.com/p/123/extra",              // extra segment
-        "https://example.com/p/..%2F..%2Fetc",          // traversal via encoding
-        "https://example.com/p/%3Cscript%3E",           // injection
-        "https://example.com/orders/" + String(repeating: "a", count: 65),
-        "https://example.com/invite/short",             // token too short
-        "https://example.com/auth/magic",               // missing token
-        "https://example.com/w/acme/projects",          // incomplete
-        "https://example.com/unknown/route",
-    ])
-    func rejectsInvalidLinks(_ raw: String) throws {
-        let url = try #require(URL(string: raw))
-        guard case .unsupported = parser.parse(url) else {
-            Issue.record("Expected .unsupported for \(raw)"); return
-        }
-    }
-
-    @Test func redactsTokensForLogging() throws {
-        let url = try #require(URL(string: "https://example.com/auth/magic?token=secret123secret123&utm_source=mail"))
-        let logged = url.redactedForLogging()
-        #expect(!logged.contains("secret123"))
-        #expect(logged.contains("utm_source=mail"))
-    }
-}
+// @Test(arguments:) table: one (rawURL, expected DeepLink) row per link-spec row, legacy route,
+// www/case/trailing-slash/slug/utm variant, and both https + myapp:// forms.
+// Second table: URLs that must parse to .unsupported — unknown host, "example.com.evil.com" suffix trick,
+// http, other scheme, missing/extra segments, encoded traversal/injection, over-long IDs, short tokens.
+// Plus: url.redactedForLogging() drops token values but keeps utm_*.
 ```
 
 ### A.4 Pending link store
@@ -666,16 +597,12 @@ struct PendingLink: Codable, Sendable, Equatable {
 /// the app — e.g. email verification in Mail — can still resume). Token links stay in memory.
 @MainActor
 final class PendingLinkStore {
-    private let defaults: UserDefaults
-    private let ttl: TimeInterval
-    private let now: () -> Date
+    private let defaults: UserDefaults, ttl: TimeInterval, now: () -> Date
     private let key = "pendingDeepLink.v1"
     private var memory: PendingLink?
 
     init(defaults: UserDefaults = .standard, ttl: TimeInterval = 30 * 60, now: @escaping () -> Date = Date.init) {
-        self.defaults = defaults
-        self.ttl = ttl
-        self.now = now
+        self.defaults = defaults; self.ttl = ttl; self.now = now
     }
 
     func save(_ url: URL, source: LinkSource, containsSecret: Bool) {
@@ -698,10 +625,7 @@ final class PendingLinkStore {
 
     var hasPending: Bool { memory != nil || defaults.data(forKey: key) != nil }
 
-    func clear() {
-        memory = nil
-        defaults.removeObject(forKey: key)
-    }
+    func clear() { memory = nil; defaults.removeObject(forKey: key) }
 }
 ```
 
@@ -714,12 +638,8 @@ import Observation
 enum AppTab: Hashable { case home, shop, projects, account }
 
 enum Route: Hashable {
-    case product(id: String, tab: DeepLink.ProductTab?)
-    case orders
-    case order(id: String)
-    case project(id: String)
-    case settings
-    case notificationSettings
+    case product(id: String, tab: DeepLink.ProductTab?), orders, order(id: String), project(id: String)
+    case settings, notificationSettings
 }
 
 enum SheetRoute: Identifiable, Hashable {
@@ -823,12 +743,9 @@ final class DeepLinkCoordinator {
 
         let link = parser.parse(url)
         let outcome = await route(link, url: url, source: source)
-        var params = url.utmParameters
-        params["source"] = source.rawValue
-        params["route"] = link.analyticsName
-        params["result"] = outcome.rawValue
-        params["launch_type"] = isColdLaunch ? "cold" : "warm"
-        analytics("deep_link_opened", params)
+        let params = ["source": source.rawValue, "route": link.analyticsName, "result": outcome.rawValue,
+                      "launch_type": isColdLaunch ? "cold" : "warm"]
+        analytics("deep_link_opened", url.utmParameters.merging(params) { _, new in new })
         return outcome
     }
 
@@ -920,47 +837,15 @@ struct ExampleApp: App {
     }
 }
 
-struct RootView: View {
-    @Environment(AppRouter.self) private var router
-    @Environment(DeepLinkCoordinator.self) private var coordinator
-
-    var body: some View {
-        @Bindable var router = router
-        @Bindable var coordinator = coordinator
-        TabView(selection: $router.selectedTab) {
-            NavigationStack(path: router.binding(for: .shop)) {
-                ShopView().navigationDestination(for: Route.self, destination: RouteView.init)
-            }
-            .tag(AppTab.shop).tabItem { Label("Shop", systemImage: "bag") }
-
-            NavigationStack(path: router.binding(for: .account)) {
-                AccountView().navigationDestination(for: Route.self, destination: RouteView.init)
-            }
-            .tag(AppTab.account).tabItem { Label("Account", systemImage: "person") }
-            // … home, projects
-        }
-        .sheet(item: $router.sheet) { sheet in SheetView(route: sheet) }
-        .confirmationDialog("Switch account to open this link?",
-                            isPresented: Binding(get: { coordinator.switchPrompt != nil },
-                                                 set: { if !$0 { coordinator.cancelSwitch() } }),
-                            titleVisibility: .visible) {
-            Button("Switch") { Task { await coordinator.confirmSwitch(perform: { _, _ in /* ios-multi-account */ }) } }
-            Button("Cancel", role: .cancel) { coordinator.cancelSwitch() }
-        }
-        // Internal links in Text/AttributedString route in-app (push) instead of bouncing to Safari.
-        .environment(\.openURL, OpenURLAction { url in
-            let link = DeepLinkParser.live.parse(url)
-            if case .unsupported = link { return .systemAction }
-            Task { await coordinator.handle(url: url, source: .internalLink) }
-            return .handled
-        })
-    }
-}
+// RootView (sketch): TabView(selection: $router.selectedTab) with one NavigationStack(path: router.binding(for: tab))
+// per tab, .navigationDestination(for: Route.self), .sheet(item: $router.sheet), a confirmationDialog bound to
+// coordinator.switchPrompt (Switch → coordinator.confirmSwitch(perform:) via ios-multi-account; Cancel → cancelSwitch()),
+// and .environment(\.openURL, OpenURLAction { … }) so internal links that parse route in-app with source .internalLink
+// (push) and unsupported ones return .systemAction.
 
 /// Push taps: set the delegate early so cold-launch taps are delivered.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var env: AppEnvironment?
-    private var queued: URL?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -973,10 +858,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         guard let raw = response.notification.request.content.userInfo["url"] as? String,
               let url = URL(string: raw) else { return }
         // accountId / portalId in userInfo are resolved by LinkGateContext.owner(of:) — see ios-push-notifications.
-        await MainActor.run {
-            if let env { Task { await env.coordinator.handle(url: url, source: .push) } }
-            else { queued = url }   // env not attached yet on cold launch → coordinator parks via isUIReady anyway
-        }
+        // If env is not attached yet on cold launch, the coordinator parks the link via isUIReady anyway.
+        await MainActor.run { if let env { Task { await env.coordinator.handle(url: url, source: .push) } } }
     }
 }
 ```
@@ -991,47 +874,21 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var env: AppEnvironment { (UIApplication.shared.delegate as! AppDelegate).env! }
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
-        let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = env.makeRootViewController()   // coordinators observe AppRouter
-        window.makeKeyAndVisible()
-        self.window = window
-        env.markUIReady()
-
+        // … create window, set root VC (coordinators observe AppRouter), makeKeyAndVisible, env.markUIReady()
         // COLD LAUNCH — the step most implementations forget.
         if let url = connectionOptions.userActivities.first(where: { $0.activityType == NSUserActivityTypeBrowsingWeb })?.webpageURL {
             Task { await env.coordinator.handle(url: url, source: .universalLink, isColdLaunch: true) }
         } else if let url = connectionOptions.urlContexts.first?.url {
             Task { await env.coordinator.handle(url: url, source: .customScheme, isColdLaunch: true) }
-        } else if let item = connectionOptions.shortcutItem, let url = Self.url(for: item) {
-            Task { await env.coordinator.handle(url: url, source: .quickAction, isColdLaunch: true) }
         } else {
             Task { await env.coordinator.replayPendingIfAny() }
         }
     }
 
-    // WARM — universal links
-    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
-        guard userActivity.activityType == NSUserActivityTypeBrowsingWeb, let url = userActivity.webpageURL else { return }
-        Task { await env.coordinator.handle(url: url, source: .universalLink) }
-    }
-
-    // WARM — custom schemes and widget URLs
-    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        guard let url = URLContexts.first?.url else { return }
-        Task { await env.coordinator.handle(url: url, source: .customScheme) }
-    }
-
-    // WARM — quick actions
-    func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem,
-                     completionHandler: @escaping (Bool) -> Void) {
-        guard let url = Self.url(for: shortcutItem) else { return completionHandler(false) }
-        Task { await env.coordinator.handle(url: url, source: .quickAction); completionHandler(true) }
-    }
-
-    private static func url(for item: UIApplicationShortcutItem) -> URL? {
-        (item.userInfo?["url"] as? String).flatMap(URL.init(string:))
-    }
+    // WARM: scene(_:continue:) → userActivity.webpageURL (.universalLink);
+    //       scene(_:openURLContexts:) → URLContexts.first?.url (.customScheme, widget URLs). Same coordinator.handle.
+    // Quick actions: map connectionOptions.shortcutItem (cold) and windowScene(_:performActionFor:completionHandler:)
+    // (warm) to item.userInfo["url"] → coordinator.handle(url:source: .quickAction).
 }
 ```
 
@@ -1040,40 +897,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 ### A.7 Resolving short links and email click-tracking URLs
 
 ```swift
-import Foundation
-
-/// For associated short/click-tracking domains: the app receives the wrapper URL and must
-/// resolve it to the canonical URL (which also records the click server-side).
-struct LinkResolver: Sendable {
-    let wrapperHosts: Set<String> = ["go.example.com", "click.example.com"]
-    let session: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 3
-        return URLSession(configuration: c, delegate: NoRedirects(), delegateQueue: nil)
-    }()
-
-    func needsResolution(_ url: URL) -> Bool {
-        url.host.map { wrapperHosts.contains($0.lowercased()) } ?? false
-    }
-
-    /// Returns the redirect target without following it into a web page. Falls back to the original URL.
-    func resolve(_ url: URL, parser: DeepLinkParser) async -> URL {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"                       // many trackers don't record HEAD
-        guard let (_, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse, (300..<400).contains(http.statusCode),
-              let location = http.value(forHTTPHeaderField: "Location"),
-              let target = URL(string: location, relativeTo: url)?.absoluteURL else { return url }
-        // Only accept targets on our own domains — never become an open redirect.
-        if case .unsupported = parser.parse(target) { return url }
-        return target
-    }
-
-    private final class NoRedirects: NSObject, URLSessionTaskDelegate {
-        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                        newRequest request: URLRequest) async -> URLRequest? { nil }
-    }
-}
+// LinkResolver (sketch): for wrapper hosts (go./click.example.com) issue a GET (trackers often ignore HEAD) on an
+// ephemeral URLSession with a ~3 s timeout and a delegate that refuses redirects; take the 3xx Location, and accept it
+// only if DeepLinkParser parses it to a supported link (never an open redirect). Otherwise return the original URL.
 // In DeepLinkCoordinator.handle: if resolver.needsResolution(url) { url = await resolver.resolve(url, parser: parser) }
 // On failure/timeout the original URL is unsupported → opened in Safari, so the user still gets the web page.
 ```
@@ -1089,62 +915,21 @@ Served at `https://example.com/.well-known/apple-app-site-association` (and on e
       {
         "appIDs": ["ABCDE12345.com.example.app"],
         "components": [
-          { "/": "/oauth/*",        "exclude": true, "comment": "OAuth stays in the auth session / web" },
-          { "/": "/unsubscribe*",   "exclude": true, "comment": "Email unsubscribe must open web" },
-          { "/": "/account/delete", "exclude": true },
-          { "/": "/help/*",         "exclude": true },
-          { "/": "/legal/*",        "exclude": true },
+          { "/": "/oauth/*", "exclude": true }, { "/": "/unsubscribe*", "exclude": true },
+          { "/": "/account/delete", "exclude": true }, { "/": "/help/*", "exclude": true }, { "/": "/legal/*", "exclude": true },
           { "/": "*", "?": { "web": "1" }, "exclude": true, "comment": "Escape hatch: force web" },
-          { "/": "/p/*" },
-          { "/": "/products/*",     "comment": "Legacy route, keep forever" },
-          { "/": "/orders/*" },
-          { "/": "/w/*/projects/*" },
-          { "/": "/invite/*" },
-          { "/": "/auth/magic",     "?": { "token": "?*" } },
-          { "/": "/settings/notifications" },
-          { "/": "/offer/*" }
+          { "/": "/p/*" }, { "/": "/products/*", "comment": "Legacy route, keep forever" }, { "/": "/orders/*" },
+          { "/": "/w/*/projects/*" }, { "/": "/invite/*" }, { "/": "/auth/magic", "?": { "token": "?*" } },
+          { "/": "/settings/notifications" }, { "/": "/offer/*" }
         ]
       }
     ]
   },
-  "webcredentials": {
-    "apps": ["ABCDE12345.com.example.app"]
-  },
-  "appclips": {
-    "apps": ["ABCDE12345.com.example.app.Clip"]
-  }
+  "webcredentials": { "apps": ["ABCDE12345.com.example.app"] },
+  "appclips": { "apps": ["ABCDE12345.com.example.app.Clip"] }
 }
 ```
 
-Entitlements (`App.entitlements`, Release):
-
-```xml
-<key>com.apple.developer.associated-domains</key>
-<array>
-    <string>applinks:example.com</string>
-    <string>applinks:www.example.com</string>
-    <string>applinks:go.example.com</string>
-    <string>applinks:click.example.com</string>
-    <string>webcredentials:example.com</string>
-</array>
-<!-- Debug.entitlements: applinks:staging.example.com?mode=developer -->
-```
-
-`https://example.com/.well-known/assetlinks.json` for the **android-deep-links** sibling on the same domain (include the **Play App Signing** key's SHA-256 from Play Console, plus the upload/debug keys for internal builds):
-
-```json
-[
-  {
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "com.example.app",
-      "sha256_cert_fingerprints": [
-        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
-      ]
-    }
-  }
-]
-```
+Entitlements: `applinks:` for every host above (`example.com`, `www.`, `go.`, `click.`) plus `webcredentials:example.com`; Debug adds `applinks:staging.example.com?mode=developer`. The **android-deep-links** sibling's `assetlinks.json` lives on the same domain (Play App Signing SHA-256 plus upload/debug keys) — see that skill's Appendix A.2.
 
 Hosting checklist for both files: HTTPS, 200, no redirects, `application/json`, excluded from auth/WAF challenges, deployed by CI with a post-deploy fetch check, and changed *before* the app release that depends on new paths.

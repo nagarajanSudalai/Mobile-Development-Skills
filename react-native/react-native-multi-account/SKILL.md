@@ -261,30 +261,22 @@ See **react-native-revenuecat-iap** / **react-native-in-app-purchase**.
 
 | # | Scenario | Expected |
 |---|---|---|
-| M1 | Add second account | Fresh login (no SSO auto-login), new session, switcher shows both |
-| M2 | Add same account again | Detected; tokens updated; no duplicate entry |
+| M1–M2 | Add second account / same account again | Fresh login (no SSO auto-login), switcher shows both / duplicate detected, tokens updated, no new entry |
 | M3 | Add account in another region | Its requests go to its base URL; A's still to A's |
 | M4 | Switch A → B | Overlay; no A data visible at any frame; B lands in its last portal; back button doesn't reach A's screens |
 | M5 | Switch mid-request (slow A request) | A request aborted; response never written into B's cache/store |
 | M6 | Switch during unsaved draft | Prompt or draft saved per portal; restored on return |
 | M7 | Kill app mid-switch | Relaunch into a consistent account (A or B), never a mix |
 | M8 | Portal switch P1 → P2 | Portal data reset; account profile not refetched; header = P2 |
-| M9 | Portal revoked while viewing it | Message; moved to another portal; P1 cache removed |
-| M10 | Role downgraded mid-session | Admin UI disappears; actions fail gracefully |
-| M11 | Zero portals after login | Empty state with create/request |
-| M12 | 200 portals | Searchable picker, recent first, smooth scroll |
+| M9–M10 | Portal revoked while viewing it / role downgraded | Message, moved to another portal, P1 cache removed / admin UI disappears, actions fail gracefully |
+| M11–M12 | Zero portals / 200 portals | Empty state with create/request / searchable picker, recent first |
 | M13 | Access token expiry on A, many parallel requests | One refresh call; all requests retried once |
-| M14 | Refresh token revoked on inactive B | B marked needsReauth; A unaffected; badge in switcher |
-| M15 | Refresh token revoked on active A | Banner/re-auth; other accounts kept; can switch away |
-| M16 | Push for inactive account, tapped (warm) | Switch to that account+portal, open the route |
-| M17 | Push for inactive account, tapped (cold start) | Registry loaded, switch, route opened once |
+| M14–M15 | Refresh token revoked on inactive B / active A | Only that account marked needsReauth (badge in switcher / re-auth banner); others kept, can switch away |
+| M16–M17 | Push for inactive account, tapped (warm / cold start) | Registry loaded, switch to that account+portal, route opened once |
 | M18 | Push for inactive portal of active account | Portal switch, route opened |
-| M19 | Push for removed account | Ignored; server unregister attempted |
-| M20 | Foreground push for other account | Banner labelled with account; active data untouched |
-| M21 | Deep link to portal of inactive account | Confirmation, then switch + navigate |
-| M22 | Deep link to portal no account has | No-access screen; "Add account" preserves link |
-| M23 | Sign out active (2 accounts) | Moves to the other; removed account's files/MMKV/keychain gone |
-| M24 | Sign out last account | Logged-out root; RevenueCat logOut; push unregistered |
+| M19–M20 | Push for removed account / foreground push for other account | Ignored + unregister attempted / banner labelled with account, active data untouched |
+| M21–M22 | Deep link to portal of inactive account / of no account | Confirm, switch + navigate / no-access screen, "Add account" preserves link |
+| M23–M24 | Sign out active (2 accounts) / last account | Moves to the other, removed account's files/MMKV/keychain gone / logged-out root, RevenueCat logOut, push unregistered |
 | M25 | Sign out offline | Local wipe immediate; revoke retried later |
 | M26 | Reinstall app (iOS) | No auto sign-in from leftover Keychain items |
 | M27 | Android backup restore to new device | No crash; accounts require login; stale data wiped |
@@ -297,32 +289,7 @@ See **react-native-revenuecat-iap** / **react-native-in-app-purchase**.
 
 ### 16.3 Example tests
 
-```ts
-it('aborts in-flight requests of the old account on switch', async () => {
-  server.use(http.get('*/feed', async () => { await delay(500); return HttpResponse.json(feedA); }));
-  const { manager } = await setupTwoAccounts();
-  const p = manager.current!.api.get('/feed');      // A's request
-  await manager.switchAccount(B);
-  await expect(p).rejects.toMatchObject({ name: 'CanceledError' });
-  expect(manager.current!.accountId).toBe(B);
-});
-
-it('single-flights refresh per account and isolates accounts', async () => {
-  const refresh = jest.fn(async (id: AccountId) => tokensFor(id));
-  const coord = new RefreshCoordinator(refresh);
-  await Promise.all([coord.refresh(A), coord.refresh(A), coord.refresh(B)]);
-  expect(refresh).toHaveBeenCalledTimes(2);
-  expect(refresh).toHaveBeenCalledWith(A);
-  expect(refresh).toHaveBeenCalledWith(B);
-});
-
-it('routes a push for an inactive portal to that account+portal', async () => {
-  const { manager, router } = await setupTwoAccounts({ active: [A, P1] });
-  await router.handle({ userId: 'u-b', portalId: 'p9', route: '/threads/42' }, { userInitiated: true });
-  expect(manager.activeKey).toBe(`${B}:p9`);
-  expect(navigate).toHaveBeenCalledWith('/threads/42');
-});
-```
+Sketches (Jest + MSW): (1) hold A's `/feed` with `delay`, `switchAccount(B)` → A's promise rejects with `CanceledError`, current account is B; (2) `RefreshCoordinator` with a mocked refresh: `refresh(A)` twice + `refresh(B)` → called exactly twice, once per account; (3) with active `[A, P1]`, `router.handle({ userId: 'u-b', portalId: 'p9', route: '/threads/42' }, { userInitiated: true })` → `activeKey === B:p9` and navigate called with the route.
 
 ## 17. Common bugs to look for in review
 
@@ -363,7 +330,7 @@ When asked to **debug**: identify the owner (global/account/portal) of the leaki
 
 ## Appendix — Reference implementation (TypeScript, Expo SDK 53+ / bare RN 0.79+)
 
-Assumes `react-native-mmkv` v3 (`new MMKV`; for v4 replace with `createMMKV` and `.delete` → `.remove`), `react-native-keychain` v9+ **or** `expo-secure-store` (both adapters shown), `axios` 1.x, `@tanstack/react-query` v5 + `@tanstack/query-sync-storage-persister` + `@tanstack/react-query-persist-client`, `zustand` v5, React Navigation v7 (Expo Router notes inline), `expo-notifications`, `react-native-purchases`, `@sentry/react-native`. Verify each API against the installed versions.
+Assumes `react-native-mmkv` v3 (`new MMKV`; for v4 replace with `createMMKV` and `.delete` → `.remove`), `react-native-keychain` v9+ **or** `expo-secure-store` (both adapters shown), `axios` 1.x, `@tanstack/react-query` v5 + `@tanstack/query-sync-storage-persister` + `@tanstack/react-query-persist-client`, `zustand` v5, React Navigation v7 (Expo Router notes inline), `expo-notifications`, `react-native-purchases`, `@sentry/react-native`. Verify each API against the installed versions. Imports are omitted; file paths are shown as the first comment of each block.
 
 ### A.1 Types & storage
 
@@ -376,116 +343,44 @@ export const sessionKey = (a: AccountId, p: PortalId | null): SessionKey => `${a
 
 export type AccountState = 'active' | 'needsReauth' | 'removing';
 
-export interface AccountRecord {
-  id: AccountId;              // local id
-  userId: string;             // server id
-  environment: 'prod' | 'staging';
-  baseUrl: string;            // region-specific
-  email: string;
-  displayName: string;
-  avatarUrl?: string;
-  addedAt: number;
-  lastUsedAt: number;
-  lastPortalId: PortalId | null;
-  state: AccountState;
-}
+// expiresAt: epoch ms, computed from expires_in at receive time. baseUrl is region-specific.
+export interface AccountRecord { id: AccountId; userId: string; environment: 'prod' | 'staging'; baseUrl: string;
+  email: string; displayName: string; avatarUrl?: string; addedAt: number; lastUsedAt: number;
+  lastPortalId: PortalId | null; state: AccountState; }
+export interface Portal { id: PortalId; name: string; slug: string; role: string; lastUsedAt?: number;
+  status: 'active' | 'suspended' | 'pendingInvite'; }
+export interface Tokens { accessToken: string; refreshToken: string; expiresAt: number; }
 
-export interface Portal {
-  id: PortalId;
-  name: string;
-  slug: string;
-  role: 'owner' | 'admin' | 'member' | 'guest';
-  iconUrl?: string;
-  lastUsedAt?: number;
-  status: 'active' | 'suspended' | 'pendingInvite';
-}
-
-export interface Tokens {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;          // epoch ms, computed from expires_in at receive time
-}
-
-export class ReauthRequiredError extends Error {
-  constructor(public accountId: AccountId) { super(`Re-auth required for ${accountId}`); this.name = 'ReauthRequiredError'; }
-}
-export class PortalAccessRevokedError extends Error {
-  constructor(public portalId: PortalId) { super(`No access to ${portalId}`); this.name = 'PortalAccessRevokedError'; }
-}
+export class ReauthRequiredError extends Error { constructor(public accountId: AccountId) { super(`Re-auth required for ${accountId}`); this.name = 'ReauthRequiredError'; } }
+export class PortalAccessRevokedError extends Error { constructor(public portalId: PortalId) { super(`No access to ${portalId}`); this.name = 'PortalAccessRevokedError'; } }
 ```
 
 ```ts
 // session/storage.ts
-import { MMKV } from 'react-native-mmkv';
-import * as Crypto from 'expo-crypto';
-import type { AccountId } from './types';
-import { secureStore } from './secureStore';
-
 /** Account-agnostic, unencrypted: registry, theme, install flag. No secrets. */
 export const globalStorage = new MMKV({ id: 'global' });
 
-const accountStores = new Map<AccountId, MMKV>();
-
-export async function openAccountStorage(id: AccountId): Promise<MMKV> {
-  const cached = accountStores.get(id);
-  if (cached) return cached;
-  let key = await secureStore.get(`mmkvkey.${id}`);
-  if (!key) {
-    key = Array.from(Crypto.getRandomBytes(16), b => b.toString(16).padStart(2, '0')).join(''); // MMKV key max 16 bytes
-    await secureStore.set(`mmkvkey.${id}`, key);
-  }
-  const store = new MMKV({ id: `acct.${id}`, encryptionKey: key.slice(0, 16) });
-  accountStores.set(id, store);
-  return store;
-}
-
-export async function destroyAccountStorage(id: AccountId) {
-  const store = await openAccountStorage(id);
-  store.clearAll();
-  accountStores.delete(id);
-  await secureStore.remove(`mmkvkey.${id}`);
-}
+// openAccountStorage(id): cached per id; encryption key = 16 random bytes (MMKV key max 16 bytes)
+// stored in the secure store as `mmkvkey.<id>`; returns new MMKV({ id: `acct.${id}`, encryptionKey }).
+// destroyAccountStorage(id): clearAll(), drop the cached instance, remove `mmkvkey.<id>`.
 ```
 
 ### A.2 Secure token store (react-native-keychain or expo-secure-store)
 
 ```ts
 // session/secureStore.ts
-import * as Keychain from 'react-native-keychain';
-import * as SecureStore from 'expo-secure-store';
-
-export interface SecureKV {
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string): Promise<void>;
-  remove(key: string): Promise<void>;
-}
+export interface SecureKV { get(k: string): Promise<string | null>; set(k: string, v: string): Promise<void>; remove(k: string): Promise<void>; }
 
 /** react-native-keychain: one generic-password item per key (service). */
 export const keychainKV: SecureKV = {
-  async get(key) {
-    const res = await Keychain.getGenericPassword({ service: key });
-    return res ? res.password : null;
-  },
-  async set(key, value) {
-    await Keychain.setGenericPassword('v', value, {
-      service: key,
-      accessible: Keychain.ACCESSIBLE.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
-    });
-  },
-  async remove(key) {
-    await Keychain.resetGenericPassword({ service: key });
-  },
+  get: async key => { const r = await Keychain.getGenericPassword({ service: key }); return r ? r.password : null; },
+  set: async (key, value) => { await Keychain.setGenericPassword('v', value, { service: key, accessible: Keychain.ACCESSIBLE.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY }); },
+  remove: async key => { await Keychain.resetGenericPassword({ service: key }); },
 };
 
-/** expo-secure-store: keys limited to [A-Za-z0-9._-]. */
-const opts: SecureStore.SecureStoreOptions = {
-  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
-};
-export const expoKV: SecureKV = {
-  get: key => SecureStore.getItemAsync(key, opts),
-  set: (key, value) => SecureStore.setItemAsync(key, value, opts),
-  remove: key => SecureStore.deleteItemAsync(key, opts),
-};
+// expo-secure-store alternative: keys limited to [A-Za-z0-9._-]; get/set/remove map to
+// getItemAsync / setItemAsync / deleteItemAsync with
+// { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY }.
 
 // Pick one for the app.
 export const secureStore: SecureKV = keychainKV;
@@ -493,60 +388,10 @@ export const secureStore: SecureKV = keychainKV;
 
 ```ts
 // session/tokenStore.ts
-import type { AccountId, Tokens } from './types';
-import { secureStore } from './secureStore';
-
-const INDEX_KEY = 'auth.index';
-
-export class TokenStore {
-  private memory = new Map<AccountId, Tokens>();
-
-  private key(id: AccountId) { return `auth.${id}`; }
-
-  async get(id: AccountId): Promise<Tokens | null> {
-    const hit = this.memory.get(id);
-    if (hit) return hit;
-    const raw = await secureStore.get(this.key(id));
-    if (!raw) return null;
-    const tokens = JSON.parse(raw) as Tokens;
-    this.memory.set(id, tokens);
-    return tokens;
-  }
-
-  async set(id: AccountId, tokens: Tokens) {
-    await secureStore.set(this.key(id), JSON.stringify(tokens)); // persist first
-    this.memory.set(id, tokens);
-    await this.addToIndex(id);
-  }
-
-  async remove(id: AccountId) {
-    this.memory.delete(id);
-    await secureStore.remove(this.key(id));
-    const ids = (await this.index()).filter(x => x !== id);
-    await secureStore.set(INDEX_KEY, JSON.stringify(ids));
-  }
-
-  /** Every account id that ever stored a token — used to wipe after iOS reinstall. */
-  async index(): Promise<AccountId[]> {
-    const raw = await secureStore.get(INDEX_KEY);
-    return raw ? (JSON.parse(raw) as AccountId[]) : [];
-  }
-
-  private async addToIndex(id: AccountId) {
-    const ids = await this.index();
-    if (!ids.includes(id)) await secureStore.set(INDEX_KEY, JSON.stringify([...ids, id]));
-  }
-
-  async wipeAll() {
-    for (const id of await this.index()) {
-      await secureStore.remove(this.key(id));
-      await secureStore.remove(`mmkvkey.${id}`);
-    }
-    await secureStore.remove(INDEX_KEY);
-    this.memory.clear();
-  }
-}
-
+// TokenStore: in-memory cache over secureStore, item `auth.<id>` = JSON Tokens.
+//   set(id, t): persist to the secure store FIRST, then memory, then add id to `auth.index`.
+//   get(id) / remove(id); index(): every id that ever stored a token — used to wipe after iOS reinstall;
+//   wipeAll(): remove `auth.<id>` and `mmkvkey.<id>` for every indexed id, then the index.
 export const tokenStore = new TokenStore();
 ```
 
@@ -554,25 +399,13 @@ export const tokenStore = new TokenStore();
 
 ```ts
 // session/accountRegistry.ts
-import { globalStorage } from './storage';
-import { tokenStore } from './tokenStore';
-import type { AccountId, AccountRecord, PortalId } from './types';
-
-const KEY = 'registry.v2';
-const INSTALL_FLAG = 'installed';
+const KEY = 'registry.v2', INSTALL_FLAG = 'installed';
 export const MAX_ACCOUNTS = 5;
 
-interface RegistryData {
-  version: 2;
-  accounts: AccountRecord[];
-  activeAccountId: AccountId | null;
-}
-
-type Listener = (d: RegistryData) => void;
+interface RegistryData { version: 2; accounts: AccountRecord[]; activeAccountId: AccountId | null; }
 
 export class AccountRegistry {
   private data: RegistryData = { version: 2, accounts: [], activeAccountId: null };
-  private listeners = new Set<Listener>();
 
   async load() {
     // iOS keeps Keychain items across uninstall; MMKV does not survive. Wipe leftovers.
@@ -596,43 +429,11 @@ export class AccountRegistry {
     this.save();
   }
 
-  get accounts(): readonly AccountRecord[] { return this.data.accounts; }
-  get activeAccountId() { return this.data.activeAccountId; }
-  get canAdd() { return this.data.accounts.length < MAX_ACCOUNTS; }
+  // Getters/mutators: accounts, activeAccountId, canAdd (< MAX_ACCOUNTS), ordered() (lastUsedAt desc),
+  // find(id), findByServerUser(userId, env), upsert, patch, remove, subscribe — each mutation calls save().
+  // setActive(id, portalId?) also stamps lastUsedAt and lastPortalId.
 
-  ordered(): AccountRecord[] {
-    return [...this.data.accounts].sort((a, b) => b.lastUsedAt - a.lastUsedAt);
-  }
-  find(id: AccountId) { return this.data.accounts.find(a => a.id === id); }
-  findByServerUser(userId: string, env: AccountRecord['environment']) {
-    return this.data.accounts.find(a => a.userId === userId && a.environment === env);
-  }
-
-  upsert(record: AccountRecord) {
-    const i = this.data.accounts.findIndex(a => a.id === record.id);
-    if (i >= 0) this.data.accounts[i] = record; else this.data.accounts.push(record);
-    this.save();
-  }
-  patch(id: AccountId, p: Partial<AccountRecord>) {
-    const a = this.find(id);
-    if (a) { Object.assign(a, p); this.save(); }
-  }
-  setActive(id: AccountId | null, portalId?: PortalId | null) {
-    this.data.activeAccountId = id;
-    if (id) this.patch(id, { lastUsedAt: Date.now(), ...(portalId !== undefined && { lastPortalId: portalId }) });
-    this.save();
-  }
-  remove(id: AccountId) {
-    this.data.accounts = this.data.accounts.filter(a => a.id !== id);
-    if (this.data.activeAccountId === id) this.data.activeAccountId = null;
-    this.save();
-  }
-
-  subscribe(l: Listener) { this.listeners.add(l); return () => this.listeners.delete(l); }
-  private save() {
-    globalStorage.set(KEY, JSON.stringify(this.data));
-    this.listeners.forEach(l => l(this.data));
-  }
+  private save() { globalStorage.set(KEY, JSON.stringify(this.data)); /* notify subscribers */ }
 }
 
 export const registry = new AccountRegistry();
@@ -642,8 +443,6 @@ export const registry = new AccountRegistry();
 
 ```ts
 // session/refresh.ts
-import type { AccountId, Tokens } from './types';
-
 /** One in-flight refresh per account; accounts never wait on each other. */
 export class RefreshCoordinator {
   private inflight = new Map<AccountId, Promise<Tokens>>();
@@ -661,12 +460,6 @@ export class RefreshCoordinator {
 
 ```ts
 // session/apiClient.ts
-import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
-import { tokenStore } from './tokenStore';
-import { registry } from './accountRegistry';
-import { RefreshCoordinator } from './refresh';
-import { ReauthRequiredError, PortalAccessRevokedError, type AccountId, type PortalId, type Tokens } from './types';
-
 const SKEW_MS = 60_000;
 
 async function refreshTokens(id: AccountId): Promise<Tokens> {
@@ -675,15 +468,10 @@ async function refreshTokens(id: AccountId): Promise<Tokens> {
   if (!account || !current) throw new ReauthRequiredError(id);
   try {
     // Plain axios: must not go through the authed interceptor.
-    const { data } = await axios.post(`${account.baseUrl}/oauth/token`, {
-      grant_type: 'refresh_token',
-      refresh_token: current.refreshToken,
-    }, { timeout: 15_000 });
-    const next: Tokens = {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? current.refreshToken, // rotation
-      expiresAt: Date.now() + data.expires_in * 1000,
-    };
+    const { data } = await axios.post(`${account.baseUrl}/oauth/token`,
+      { grant_type: 'refresh_token', refresh_token: current.refreshToken }, { timeout: 15_000 });
+    const next: Tokens = { accessToken: data.access_token, expiresAt: Date.now() + data.expires_in * 1000,
+      refreshToken: data.refresh_token ?? current.refreshToken }; // rotation-aware
     await tokenStore.set(id, next); // persist before anyone uses it
     return next;
   } catch (e) {
@@ -700,24 +488,14 @@ export const refreshCoordinator = new RefreshCoordinator(refreshTokens);
 
 type RetriableConfig = InternalAxiosRequestConfig & { _retried?: boolean };
 
-/**
- * Account-bound client. accountId (and optional portalId) are captured here,
- * never read from a global at send time.
- */
-export function createApiClient(opts: {
-  accountId: AccountId;
-  portalId?: PortalId;
-  signal: AbortSignal; // aborted on session teardown
+/** Account-bound client: accountId (and optional portalId) captured here, never read from a global at send time. */
+export function createApiClient({ accountId, portalId, signal }: {
+  accountId: AccountId; portalId?: PortalId; signal: AbortSignal; // signal aborted on session teardown
 }): AxiosInstance {
-  const { accountId, portalId, signal } = opts;
   const account = registry.find(accountId);
   if (!account) throw new ReauthRequiredError(accountId);
 
-  const client = axios.create({
-    baseURL: account.baseUrl,
-    timeout: 30_000,
-    withCredentials: false, // bearer only; don't ride the shared cookie jar
-  });
+  const client = axios.create({ baseURL: account.baseUrl, timeout: 30_000, withCredentials: false }); // bearer only; no shared cookie jar
 
   client.interceptors.request.use(async config => {
     if (signal.aborted) throw new axios.CanceledError('session closed');
@@ -755,40 +533,16 @@ For `fetch` instead of axios, the same shape works: `createFetch({ accountId, po
 
 ```ts
 // session/session.ts
-import { QueryClient } from '@tanstack/react-query';
-import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
-import type { MMKV } from 'react-native-mmkv';
-import { createStore, type StoreApi } from 'zustand/vanilla';
-import type { AxiosInstance } from 'axios';
-import { createApiClient } from './apiClient';
-import { openAccountStorage } from './storage';
-import { PortalAccessRevokedError, type AccountId, type Portal, type PortalId } from './types';
-
 export class AccountSession {
   readonly abort = new AbortController();
   api!: AxiosInstance;            // account-level (no portal header)
   storage!: MMKV;
   portals: Portal[] = [];
   private closed = false;
+  // static open(accountId): openAccountStorage, createApiClient({ accountId, signal: abort.signal }),
+  // load cached 'portals' from MMKV for an instant start.
 
-  private constructor(readonly accountId: AccountId) {}
-
-  static async open(accountId: AccountId): Promise<AccountSession> {
-    const s = new AccountSession(accountId);
-    s.storage = await openAccountStorage(accountId);
-    s.api = createApiClient({ accountId, signal: s.abort.signal });
-    const cached = s.storage.getString('portals');
-    if (cached) s.portals = JSON.parse(cached);
-    return s;
-  }
-
-  async refreshPortals(): Promise<Portal[]> {
-    const { data } = await this.api.get<Portal[]>('/me/portals');
-    if (this.closed) return this.portals;
-    this.portals = data;
-    this.storage.set('portals', JSON.stringify(data));
-    return data;
-  }
+  // refreshPortals(): GET /me/portals; ignore the result if closed; cache JSON in storage 'portals'.
 
   defaultPortal(lastPortalId: PortalId | null): PortalId | null {
     const active = this.portals.filter(p => p.status === 'active');
@@ -797,26 +551,18 @@ export class AccountSession {
       ?? null;
   }
 
-  close() {
-    this.closed = true;
-    this.abort.abort(); // cancels every request created by this account's clients
-  }
+  close() { this.closed = true; this.abort.abort(); } // cancels every request of this account's clients
 }
 
-// Portal-scoped client state (example; one store per portal session)
-export interface PortalUiState {
-  selectedThreadId: string | null;
-  composerDraft: string;
-  setSelectedThread(id: string | null): void;
-  setDraft(t: string): void;
-}
+// Portal-scoped client state, e.g. { selectedThreadId, composerDraft, setSelectedThread, setDraft }.
+export interface PortalUiState { composerDraft: string; setDraft(t: string): void; }
 
 export class PortalSession {
   readonly abort = new AbortController();
   readonly api: AxiosInstance;
   readonly queryClient: QueryClient;
-  readonly store: StoreApi<PortalUiState>;
-  readonly persister;
+  readonly store!: StoreApi<PortalUiState>;
+  readonly persister!: Persister;
   private sockets: Array<{ close(): void }> = [];
 
   constructor(readonly account: AccountSession, readonly portalId: PortalId, onRevoked: (p: PortalId) => void) {
@@ -824,39 +570,16 @@ export class PortalSession {
     account.abort.signal.addEventListener('abort', () => this.abort.abort());
     this.api = createApiClient({ accountId: account.accountId, portalId, signal: this.abort.signal });
 
-    this.queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          staleTime: 30_000,
-          gcTime: 24 * 60 * 60_000,
-          retry: (count, err) =>
-            !(err instanceof PortalAccessRevokedError) && (err as any)?.response?.status !== 403 && count < 2,
-        },
-      },
-    });
+    this.queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: 24 * 60 * 60_000,
+      retry: (n, err) => !(err instanceof PortalAccessRevokedError) && (err as any)?.response?.status !== 403 && n < 2 } } });
     this.queryClient.getQueryCache().subscribe(e => {
       if (e.type === 'updated' && e.query.state.error instanceof PortalAccessRevokedError) onRevoked(portalId);
     });
 
-    const draftKey = `p.${portalId}.draft`;
-    const storage = account.storage;
-    this.store = createStore<PortalUiState>(set => ({
-      selectedThreadId: null,
-      composerDraft: storage.getString(draftKey) ?? '',
-      setSelectedThread: id => set({ selectedThreadId: id }),
-      setDraft: t => { storage.set(draftKey, t); set({ composerDraft: t }); },
-    }));
-
-    // Persisted query cache lives in the account's encrypted MMKV, keyed per portal.
-    this.persister = createSyncStoragePersister({
-      key: `q.${portalId}`,
-      storage: {
-        getItem: k => storage.getString(k) ?? null,
-        setItem: (k, v) => storage.set(k, v),
-        removeItem: k => storage.delete(k), // v4: storage.remove(k)
-      },
-      throttleTime: 1000,
-    });
+    // Also: one zustand store per portal session (drafts persisted in the account's MMKV), and
+    // persister = createSyncStoragePersister({ key: `q.${portalId}`, storage: account MMKV adapter
+    // (removeItem → storage.delete; v4: storage.remove), throttleTime: 1000 }) — the persisted query
+    // cache lives in the account's encrypted MMKV, keyed per portal.
   }
 
   addSocket(s: { close(): void }) { this.sockets.push(s); }
@@ -869,9 +592,7 @@ export class PortalSession {
     this.queryClient.clear(); // in-memory only; persisted copy stays for fast return
   }
 
-  async destroyPersisted() {
-    await this.persister.removeClient();
-  }
+  async destroyPersisted() { await this.persister.removeClient(); }
 }
 ```
 
@@ -879,24 +600,8 @@ export class PortalSession {
 
 ```ts
 // session/sessionManager.ts
-import Purchases from 'react-native-purchases';
-import * as Sentry from '@sentry/react-native';
-import * as FileSystem from 'expo-file-system/legacy'; // SDK 54+: legacy path or new File/Directory API — verify
-import { Image } from 'expo-image';
-import { registry } from './accountRegistry';
-import { tokenStore } from './tokenStore';
-import { destroyAccountStorage } from './storage';
-import { AccountSession, PortalSession } from './session';
-import { pushRegistry } from './pushRegistry';
-import { sessionKey, type AccountId, type AccountRecord, type PortalId, type SessionKey, type Tokens } from './types';
-
-export type SwitchState =
-  | { kind: 'idle' }
-  | { kind: 'switching'; to: AccountId; portal?: PortalId | null }
-  | { kind: 'needsReauth'; accountId: AccountId }
-  | { kind: 'noPortal'; accountId: AccountId }
-  | { kind: 'loggedOut' };
-
+export type SwitchState = { kind: 'idle' } | { kind: 'switching'; to: AccountId; portal?: PortalId | null }
+  | { kind: 'needsReauth'; accountId: AccountId } | { kind: 'noPortal'; accountId: AccountId } | { kind: 'loggedOut' };
 type Listener = () => void;
 
 export class SessionManager {
@@ -917,12 +622,7 @@ export class SessionManager {
     return next;
   }
 
-  async start() {
-    await registry.load();
-    const id = registry.activeAccountId;
-    if (!id) return this.set({ kind: 'loggedOut' });
-    await this.switchAccount(id);
-  }
+  // start(): registry.load(), then switchAccount(activeAccountId) or { kind: 'loggedOut' }.
 
   switchAccount(to: AccountId, portal?: PortalId | null): Promise<void> {
     return this.run(async () => {
@@ -957,65 +657,30 @@ export class SessionManager {
     });
   }
 
-  switchPortal(to: PortalId): Promise<void> {
-    return this.run(async () => {
-      const account = this.account;
-      if (!account || this.portal?.portalId === to) return;
-      this.set({ kind: 'switching', to: account.accountId, portal: to });
-      await this.flushPersist();
-      await this.portal?.close();
-      this.portal = this.makePortal(account, to);
-      registry.patch(account.accountId, { lastPortalId: to });
-      Sentry.setTag('portal_id', to);
-      this.set({ kind: 'idle' });
-    });
-  }
+  // switchPortal(to): serialized; no-op if already current. set switching → flushPersist → close old
+  // PortalSession → makePortal(account, to) → registry.patch lastPortalId → Sentry portal tag → idle.
+  // The AccountSession (tokens, account API, MMKV) is kept.
 
   private makePortal(account: AccountSession, portalId: PortalId) {
     return new PortalSession(account, portalId, revoked => void this.handlePortalRevoked(revoked));
   }
 
-  private async handlePortalRevoked(portalId: PortalId) {
-    const account = this.account;
-    if (!account || this.portal?.portalId !== portalId) return;
-    await this.portal.destroyPersisted();
-    try { await account.refreshPortals(); } catch {}
-    const next = account.defaultPortal(null);
-    // UI shows "You no longer have access to …" via the state change.
-    if (next && next !== portalId) await this.switchPortal(next);
-    else this.run(async () => { await this.portal?.close(); this.portal = null; this.set({ kind: 'noPortal', accountId: account.accountId }); });
-  }
+  // handlePortalRevoked(portalId): if current — destroyPersisted, refreshPortals, then switchPortal
+  // to account.defaultPortal(null), or close the portal and set { kind: 'noPortal' }; UI shows
+  // "You no longer have access to …".
 
-  /** Called after a successful login flow (modal over the current session). */
-  async addAccount(input: { userId: string; environment: AccountRecord['environment']; baseUrl: string;
-    email: string; displayName: string; avatarUrl?: string; tokens: Tokens }): Promise<{ duplicate: boolean }> {
-    const existing = registry.findByServerUser(input.userId, input.environment);
-    if (!existing && !registry.canAdd) throw new Error('max_accounts'); // UI should prevent reaching here
-    const id = existing?.id ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`) as AccountId;
-
-    await tokenStore.set(id, input.tokens); // secure first
-    registry.upsert({
-      id, userId: input.userId, environment: input.environment, baseUrl: input.baseUrl,
-      email: input.email, displayName: input.displayName, avatarUrl: input.avatarUrl,
-      addedAt: existing?.addedAt ?? Date.now(), lastUsedAt: Date.now(),
-      lastPortalId: existing?.lastPortalId ?? null, state: 'active',
-    });
-    await pushRegistry.registerAccount(id).catch(() => {}); // retried on next launch
-    await this.switchAccount(id);
-    return { duplicate: !!existing };
-  }
+  // addAccount(input): called after a successful login flow (modal over the current session).
+  // Dedupe by (userId, environment) → reuse existing id; throw 'max_accounts' past the limit;
+  // tokenStore.set first, then registry.upsert(state 'active'), pushRegistry.registerAccount
+  // (retried on next launch), switchAccount(id); return { duplicate }.
 
   signOut(id: AccountId): Promise<void> {
     return this.run(async () => {
       const wasActive = this.account?.accountId === id;
       registry.patch(id, { state: 'removing' }); // crash-safe: load() finishes removal
 
-      if (wasActive) {
-        await this.portal?.close();
-        this.account?.close();
-        this.portal = null;
-        this.account = null;
-      }
+      if (wasActive) { await this.portal?.close(); this.account?.close(); this.portal = null; this.account = null; }
+      // Use THIS account's credentials for unregister + revoke, bounded to 3 s, before deleting them.
       await Promise.race([
         Promise.allSettled([pushRegistry.unregisterAccount(id), this.revokeOnServer(id)]),
         new Promise(r => setTimeout(r, 3000)),
@@ -1023,6 +688,7 @@ export class SessionManager {
 
       await tokenStore.remove(id);
       await destroyAccountStorage(id);
+      // expo-file-system/legacy; SDK 54+: legacy path or new File/Directory API — verify
       await FileSystem.deleteAsync(`${FileSystem.documentDirectory}accounts/${id}/`, { idempotent: true });
       await FileSystem.deleteAsync(`${FileSystem.cacheDirectory}accounts/${id}/`, { idempotent: true });
       await Image.clearDiskCache();
@@ -1031,10 +697,8 @@ export class SessionManager {
 
       const next = registry.ordered().find(a => a.state === 'active');
       if (!wasActive) return this.notify();
-      if (next) {
-        // re-enter queue after this task finishes
-        void this.switchAccount(next.id);
-      } else {
+      if (next) void this.switchAccount(next.id); // re-enters the queue after this task finishes
+      else {
         registry.setActive(null);
         await Purchases.logOut().catch(() => {});
         Sentry.setUser(null);
@@ -1043,39 +707,14 @@ export class SessionManager {
     });
   }
 
-  async signOutAll() {
-    for (const a of [...registry.accounts]) await this.signOut(a.id);
-  }
+  // signOutAll(): signOut(id) for each registered account.
 
-  private async revokeOnServer(id: AccountId) {
-    // Best effort; queue for retry when offline (omitted).
-    const tokens = await tokenStore.get(id);
-    const account = registry.find(id);
-    if (!tokens || !account) return;
-    await fetch(`${account.baseUrl}/oauth/revoke`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tokens.refreshToken }),
-      credentials: 'omit',
-    });
-  }
+  // revokeOnServer(id): best-effort POST /oauth/revoke with THIS account's refresh token, credentials 'omit'.
 
-  private async identify(account: AccountRecord, portalId: PortalId | null) {
-    Sentry.setUser({ id: account.userId });
-    Sentry.setTag('portal_id', portalId ?? 'none');
-    Sentry.setTag('environment_account', account.environment);
-    try {
-      await Purchases.logIn(account.userId); // never logOut on switch
-    } catch { /* entitlements re-fetched later */ }
-  }
+  // identify(account, portalId): Sentry.setUser({ id: userId }) + portal/environment tags;
+  // Purchases.logIn(userId) — never logOut on switch.
 
-  private async flushPersist() {
-    // persistQueryClientSave is the explicit API; the provider also persists on change.
-    const { persistQueryClientSave } = await import('@tanstack/react-query-persist-client');
-    if (this.portal) {
-      await persistQueryClientSave({ queryClient: this.portal.queryClient, persister: this.portal.persister }).catch(() => {});
-    }
-  }
+  // flushPersist(): persistQueryClientSave({ queryClient, persister }) for the current portal.
 
   subscribe(l: Listener) { this.listeners.add(l); return () => { this.listeners.delete(l); }; }
   private set(s: SwitchState) { this.state = s; this.notify(); }
@@ -1089,33 +728,14 @@ export const sessionManager = new SessionManager();
 
 ```tsx
 // session/SessionProvider.tsx
-import React, { createContext, useContext, useSyncExternalStore } from 'react';
-import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
-import { useStore } from 'zustand';
-import { sessionManager } from './sessionManager';
-import type { PortalSession, PortalUiState } from './session';
-
 const PortalCtx = createContext<PortalSession | null>(null);
 
-export function useSessionState() {
-  return useSyncExternalStore(
-    l => sessionManager.subscribe(l),
-    () => sessionManager.state,
-  );
-}
+export function useSessionState() { return useSyncExternalStore(l => sessionManager.subscribe(l), () => sessionManager.state); }
 export function useActiveKey() {
   return useSyncExternalStore(l => sessionManager.subscribe(l), () => sessionManager.activeKey);
 }
 
-export function usePortal(): PortalSession {
-  const p = useContext(PortalCtx);
-  if (!p) throw new Error('usePortal outside a portal session');
-  return p;
-}
-export function usePortalStore<T>(selector: (s: PortalUiState) => T): T {
-  return useStore(usePortal().store, selector);
-}
-export const usePortalApi = () => usePortal().api;
+// usePortal() (throws outside a portal session), usePortalStore(selector), usePortalApi().
 
 /**
  * Everything below is remounted when (account, portal) changes:
@@ -1125,45 +745,30 @@ export function PortalSessionBoundary({ children }: { children: React.ReactNode 
   useActiveKey(); // re-render on change
   const portal = sessionManager.portal;
   if (!portal) return null;
-  const key = `${portal.account.accountId}:${portal.portalId}`;
   return (
-    <PortalCtx.Provider value={portal} key={key}>
-      <PersistQueryClientProvider
-        client={portal.queryClient}
-        persistOptions={{ persister: portal.persister, maxAge: 24 * 60 * 60_000, buster: APP_VERSION }}
-      >
+    <PortalCtx.Provider value={portal} key={`${portal.account.accountId}:${portal.portalId}`}>
+      <PersistQueryClientProvider client={portal.queryClient}
+        persistOptions={{ persister: portal.persister, maxAge: 24 * 60 * 60_000, buster: APP_VERSION }}>
         {children}
       </PersistQueryClientProvider>
     </PortalCtx.Provider>
   );
 }
-declare const APP_VERSION: string;
 ```
 
 Query keys can stay portal-relative (`['threads', filters]`) because each portal session has its own `QueryClient`. If you keep one shared client instead, prefix every key: `['a', accountId, 'p', portalId, 'threads', filters]` and remove with `queryClient.removeQueries({ queryKey: ['a', accountId] })` on switch.
 
 ```tsx
 // App.tsx (React Navigation v7)
-import React, { useEffect } from 'react';
-import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { sessionManager } from './session/sessionManager';
-import { PortalSessionBoundary, useSessionState, useActiveKey } from './session/SessionProvider';
-import { linkRouter } from './session/linkRouter';
-
 export const navigationRef = createNavigationContainerRef<RootParams>();
 const Root = createNativeStackNavigator<RootParams>();
 
 export default function App() {
   const state = useSessionState();
   const key = useActiveKey();
-
   useEffect(() => { void sessionManager.start(); }, []);
 
-  if (state.kind === 'switching') return <SwitchingOverlay accountId={state.to} />;
-  if (state.kind === 'loggedOut') return <LoggedOutNavigator />;
-  if (state.kind === 'needsReauth') return <ReauthScreen accountId={state.accountId} />;
-  if (state.kind === 'noPortal') return <NoPortalScreen accountId={state.accountId} />;
+  if (state.kind !== 'idle') return <SessionGate state={state} />; // switching overlay / logged out / reauth / no portal
 
   return (
     <PortalSessionBoundary>
@@ -1175,11 +780,7 @@ export default function App() {
         onStateChange={s => saveNavState(key, s)}
         onReady={() => linkRouter.flushPending()}
       >
-        <Root.Navigator>
-          <Root.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
-          <Root.Screen name="Thread" component={ThreadScreen} />
-          <Root.Screen name="AccountSwitcher" component={AccountSwitcher} options={{ presentation: 'modal' }} />
-        </Root.Navigator>
+        <Root.Navigator>{/* Main tabs, Thread, AccountSwitcher (modal) */}</Root.Navigator>
       </NavigationContainer>
     </PortalSessionBoundary>
   );
@@ -1192,62 +793,11 @@ Keying the whole `NavigationContainer` is the simplest reset. If you need a sing
 
 ### A.8 Push registration and routing to account + portal
 
-```ts
-// session/pushRegistry.ts
-import * as Notifications from 'expo-notifications';
-import { registry } from './accountRegistry';
-import { createApiClient } from './apiClient';
-import type { AccountId } from './types';
-
-let deviceToken: string | null = null;
-
-async function getToken() {
-  deviceToken ??= (await Notifications.getDevicePushTokenAsync()).data as string; // or getExpoPushTokenAsync({ projectId })
-  return deviceToken;
-}
-
-/** Headless-safe: builds a short-lived client for the given account. */
-function clientFor(id: AccountId) {
-  const ac = new AbortController();
-  setTimeout(() => ac.abort(), 15_000);
-  return createApiClient({ accountId: id, signal: ac.signal });
-}
-
-export const pushRegistry = {
-  async registerAccount(id: AccountId) {
-    const token = await getToken();
-    await clientFor(id).put('/devices/me', { token, platform: process.env.EXPO_OS });
-  },
-  async unregisterAccount(id: AccountId) {
-    if (!deviceToken) return;
-    await clientFor(id).delete(`/devices/${encodeURIComponent(deviceToken)}`);
-  },
-  async registerAll() {
-    for (const a of registry.accounts) {
-      if (a.state === 'active') await this.registerAccount(a.id).catch(() => {});
-    }
-  },
-  listenForTokenChanges() {
-    return Notifications.addPushTokenListener(t => { deviceToken = t.data as string; void this.registerAll(); });
-  },
-};
-```
+`pushRegistry` (sketch): caches the device token (`getDevicePushTokenAsync`, or `getExpoPushTokenAsync({ projectId })`); `registerAccount(id)` / `unregisterAccount(id)` call `PUT /devices/me` / `DELETE /devices/<token>` through a short-lived `createApiClient({ accountId: id, signal })` with a 15 s abort — headless-safe, never the active session; `registerAll()` on launch and from `addPushTokenListener`.
 
 ```ts
 // session/linkRouter.ts
-import * as Notifications from 'expo-notifications';
-import { Alert } from 'react-native';
-import { registry } from './accountRegistry';
-import { sessionManager } from './sessionManager';
-import { openAccountStorage } from './storage';
-import type { AccountId, Portal, PortalId } from './types';
-
-export interface RouteTarget {
-  userId?: string;          // from push (server user id)
-  portalId?: string;        // or portalSlug from a link
-  portalSlug?: string;
-  route: string;            // app path, already validated by the link parser
-}
+export interface RouteTarget { userId?: string; portalId?: string; portalSlug?: string; route: string } // route already validated
 
 type Navigate = (route: string) => void;
 
@@ -1257,26 +807,11 @@ class LinkRouter {
   private ready = false;
 
   attach(navigate: Navigate) { this.navigate = navigate; }
-  flushPending() {
-    this.ready = true;
-    const p = this.pending; this.pending = null;
-    if (p) void this.handle(p, { userInitiated: true });
-  }
+  flushPending() { this.ready = true; const p = this.pending; this.pending = null; if (p) void this.handle(p, { userInitiated: true }); }
 
-  /** Accounts on this device that can open the target. */
-  private async candidates(t: RouteTarget): Promise<Array<{ accountId: AccountId; portalId: PortalId | null }>> {
-    const out: Array<{ accountId: AccountId; portalId: PortalId | null }> = [];
-    for (const a of registry.accounts) {
-      if (a.state !== 'active') continue;
-      if (t.userId && a.userId !== t.userId) continue;
-      if (!t.portalId && !t.portalSlug) { out.push({ accountId: a.id, portalId: null }); continue; }
-      const storage = await openAccountStorage(a.id);
-      const portals: Portal[] = JSON.parse(storage.getString('portals') ?? '[]');
-      const p = portals.find(x => x.id === t.portalId || x.slug === t.portalSlug);
-      if (p) out.push({ accountId: a.id, portalId: p.id });
-    }
-    return out;
-  }
+  /** Accounts on this device that can open the target: state 'active', matching userId if given,
+   *  and (if a portal id/slug is given) that portal in the account's cached 'portals' list. */
+  private declare candidates: (t: RouteTarget) => Promise<Array<{ accountId: AccountId; portalId: PortalId | null }>>;
 
   async handle(t: RouteTarget, opts: { userInitiated: boolean; fromPush?: boolean }) {
     if (!this.ready || !this.navigate) { this.pending = t; return; } // cold start
@@ -1302,36 +837,15 @@ class LinkRouter {
 
 export const linkRouter = new LinkRouter();
 
-function confirmSwitch(accountId: AccountId): Promise<boolean> {
-  const a = registry.find(accountId);
-  return new Promise(resolve =>
-    Alert.alert('Switch account?', `Open this in ${a?.displayName} (${a?.email})?`, [
-      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-      { text: 'Switch', onPress: () => resolve(true) },
-    ]),
-  );
-}
+// confirmSwitch(accountId): Alert "Switch account? Open this in <name> (<email>)?" → boolean.
+declare function confirmSwitch(accountId: AccountId): Promise<boolean>;
 declare function chooseAccount(m: Array<{ accountId: AccountId; portalId: PortalId | null }>):
   Promise<{ accountId: AccountId; portalId: PortalId | null } | null>;
 
-/** Wire once at startup (outside React render). */
-export function installNotificationRouting() {
-  const toTarget = (r: Notifications.NotificationResponse): RouteTarget | null => {
-    const d = r.notification.request.content.data as Record<string, unknown>;
-    if (typeof d?.route !== 'string') return null;
-    return { userId: d.userId as string | undefined, portalId: d.portalId as string | undefined, route: d.route };
-  };
-  // Cold start: tap that launched the app
-  void Notifications.getLastNotificationResponseAsync().then(r => {
-    const t = r && toTarget(r);
-    if (t) void linkRouter.handle(t, { userInitiated: true, fromPush: true });
-  });
-  // Warm / background
-  return Notifications.addNotificationResponseReceivedListener(r => {
-    const t = toTarget(r);
-    if (t) void linkRouter.handle(t, { userInitiated: true, fromPush: true });
-  });
-}
+// installNotificationRouting(): once at startup, outside render — map response.notification.request
+// .content.data {userId, portalId, route} to a RouteTarget and call linkRouter.handle(t,
+// { userInitiated: true, fromPush: true }) for getLastNotificationResponseAsync() (cold start) and
+// addNotificationResponseReceivedListener (warm/background).
 ```
 
 Notes for adapting:

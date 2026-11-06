@@ -274,43 +274,37 @@ Lighter than account switch:
 
 | # | Scenario | Expected |
 |---|---|---|
-| M1 | Add second account while first active | Login sheet over A; on success B added, push registered, switch prompt |
+| M1 | Add second account while first active; add account in other region | Login sheet over A; on success B added, push registered, switch prompt; b uses its base URL; A unaffected |
 | M2 | Add same account again | No duplicate; tokens updated; switch to existing; toast |
-| M3 | Add account in other region | B uses its base URL; A unaffected |
-| M4 | Add account at limit | Add disabled with explanation |
-| M5 | Switch account mid-request | Old request cancelled; late response dropped; B shows only B data |
-| M6 | Switch account with unsaved draft | Prompt or draft persisted to A; restored when back to A |
-| M7 | Rapid double switch A→B→A | One final session (A); no crash, no mixed data |
-| M8 | Switch back to A | Lands on A's last portal and last screen |
-| M9 | Portal switch | Token/HTTP kept; portal VMs/sockets rebuilt; nav reset to portal home |
-| M10 | Portal switch mid-request | Response for old portal not written to new portal view |
-| M11 | Portal revoked mid-session (403 / push) | Data purged, toast, moved to another portal of same account |
-| M12 | Last portal of account revoked | Account empty state with join/create; other accounts intact |
-| M13 | Role downgraded admin → viewer | Admin actions disappear without restart |
-| M14 | 500 portals | Searchable picker, recents, smooth scrolling |
-| M15 | Login with zero portals / pending invite | Invite UI, not crash |
-| M16 | Token expiry on active account, 10 parallel calls | One refresh; all retried once |
-| M17 | Refresh token revoked on inactive account B | B marked needsReauth, banner in switcher; A unaffected |
-| M18 | Refresh revoked on active account | Re-auth sheet for A; option to switch; data kept |
-| M19 | Offline during refresh | No sign-out; retry later |
-| M20 | Push for active account+portal (foreground) | Banner, routed in place |
-| M21 | Push for inactive portal of active account | Banner with portal name; tap switches portal and navigates |
-| M22 | Push for inactive account | Banner prefixed with account; tap switches account+portal then navigates |
-| M23 | Push for signed-out account | Not shown (server unregistered) or ignored on tap |
-| M24 | Push while device locked after reboot (before first unlock) | NSE fails gracefully with generic content |
-| M25 | Deep link to portal of other signed-in account | Confirmation, then switch + navigate |
-| M26 | Deep link to portal no account has | Add-account flow; link resumed after login |
-| M27 | Sign out inactive account | Its data, Keychain item, notifications, Spotlight removed; active session untouched |
-| M28 | Sign out active account (others remain) | Switch to most-recent remaining account's last portal |
-| M29 | Sign out last account | Welcome screen; badge 0; purchases/analytics identity reset |
-| M30 | Sign out while offline | Local wipe immediate; server revoke queued |
-| M31 | Reinstall app | No ghost accounts from orphaned Keychain items |
-| M32 | Restore device backup to new phone | Registry entries without tokens → needsReauth, no crash |
-| M33 | Purchase on B after buying on A (same Apple ID) | Entitlement assignment per documented rule; UI correct per account |
-| M34 | BG refresh with 3 accounts | All synced within budget, round-robin; no write conflicts with UI session |
-| M35 | App lock enabled on B only | Switching to B requires Face ID; A doesn't; snapshot hidden |
-| M36 | Sibling app (same team) installed | Sees accounts via shared group; own token exchange; no rotation fights |
-| M37 | VoiceOver switch | Switcher fully labelled; switch announced |
+| M3 | Add account at limit | Add disabled with explanation |
+| M4 | Switch account mid-request; portal switch mid-request | Old request cancelled; late response dropped; B shows only B data; response for old portal not written to new portal view |
+| M5 | Switch account with unsaved draft | Prompt or draft persisted to A; restored when back to A |
+| M6 | Rapid double switch A→B→A | One final session (A); no crash, no mixed data |
+| M7 | Switch back to A | Lands on A's last portal and last screen |
+| M8 | Portal switch | Token/HTTP kept; portal VMs/sockets rebuilt; nav reset to portal home |
+| M9 | Portal revoked mid-session (403 / push) | Data purged, toast, moved to another portal of same account |
+| M10 | Last portal of account revoked; login with zero portals / pending invite | Account empty state with join/create; other accounts intact; invite UI, not crash |
+| M11 | Role downgraded admin → viewer | Admin actions disappear without restart |
+| M12 | 500 portals | Searchable picker, recents, smooth scrolling |
+| M13 | Token expiry on active account, 10 parallel calls | One refresh; all retried once |
+| M14 | Refresh token revoked on inactive account B; refresh revoked on active account | B marked needsReauth, banner in switcher; A unaffected; re-auth sheet for A; option to switch; data kept |
+| M15 | Offline during refresh | No sign-out; retry later |
+| M16 | Push for active account+portal (foreground) | Banner, routed in place |
+| M17 | Push for inactive portal of active account | Banner with portal name; tap switches portal and navigates |
+| M18 | Push for inactive account | Banner prefixed with account; tap switches account+portal then navigates |
+| M19 | Push for signed-out account | Not shown (server unregistered) or ignored on tap |
+| M20 | Push while device locked after reboot (before first unlock) | NSE fails gracefully with generic content |
+| M21 | Deep link to portal of other signed-in account; deep link to portal no account has | Confirmation, then switch + navigate; add-account flow; link resumed after login |
+| M22 | Sign out inactive account | Its data, Keychain item, notifications, Spotlight removed; active session untouched |
+| M23 | Sign out active account (others remain) | Switch to most-recent remaining account's last portal |
+| M24 | Sign out last account | Welcome screen; badge 0; purchases/analytics identity reset |
+| M25 | Sign out while offline | Local wipe immediate; server revoke queued |
+| M26 | Reinstall app; restore device backup to new phone | No ghost accounts from orphaned Keychain items; registry entries without tokens → needsReauth, no crash |
+| M27 | Purchase on B after buying on A (same Apple ID) | Entitlement assignment per documented rule; UI correct per account |
+| M28 | BG refresh with 3 accounts | All synced within budget, round-robin; no write conflicts with UI session |
+| M29 | App lock enabled on B only | Switching to B requires Face ID; A doesn't; snapshot hidden |
+| M30 | Sibling app (same team) installed | Sees accounts via shared group; own token exchange; no rotation fights |
+| M31 | VoiceOver switch | Switcher fully labelled; switch announced |
 
 ## 17. Common bugs to look for in review
 
@@ -347,7 +341,7 @@ When asked to **review/audit**:
 1. **Summary** — multi-account spec table (section 1), architecture (session container? singletons?), storage (Keychain classes, access groups, store layout), min OS
 2. **Checklist results** — sections 2–15 with ✅ Pass / ❌ Fail / ⚠️ Needs check and file:line
 3. **Critical issues first** — cross-account data leaks, token storage/accessibility mistakes, unwanted sign-outs, wrong-account push/link routing, incomplete wipe — with fix code
-4. **Testing gaps** — M1–M37 not covered
+4. **Testing gaps** — M1–M31 not covered
 
 When asked to **implement**: fill the spec, start from the Appendix, adapt `Account`/`Portal`, the auth endpoints and the header-vs-portal-token choice, delete what you don't need (per-portal stores, app lock, sibling-app sharing), and list the entitlements to add (Keychain Sharing group, App Groups, Push, Background Modes) and server contract questions (push payload ids, link resolve endpoint, device registration per account).
 
@@ -400,93 +394,15 @@ struct ActiveSelection: Codable, Equatable, Sendable {
     var portalId: String?
 }
 
-private struct RegistryFile: Codable {
-    var accounts: [Account] = []
-    var portals: [String: [Portal]] = [:]   // accountId → portals (cache)
-    var active: ActiveSelection?
-}
-
-enum RegistryError: Error { case limitReached, unknownAccount }
-
-/// Persisted, non-secret. Lives in the app group so extensions can read it.
+/// Persisted, non-secret JSON in the app group (extensions read it), written atomically with
+/// .completeFileProtectionUntilFirstUserAuthentication. API sketch:
 actor AccountRegistry {
     static let maxAccounts = 5
-    private let url: URL
-    private var file: RegistryFile
-
-    init(appGroup: String) {
-        let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
-            ?? URL.applicationSupportDirectory
-        url = dir.appending(path: "accounts.json")
-        file = (try? JSONDecoder().decode(RegistryFile.self, from: Data(contentsOf: url))) ?? RegistryFile()
-    }
-
-    var accounts: [Account] { file.accounts.sorted { $0.sortIndex < $1.sortIndex } }
-    var active: ActiveSelection? { file.active }
-    func account(_ id: String) -> Account? { file.accounts.first { $0.id == id } }
-    func account(for key: AccountKey) -> Account? { file.accounts.first { $0.key == key } }
-    func portals(of accountId: String) -> [Portal] { file.portals[accountId] ?? [] }
-
-    /// Inserts or updates (dedupe by issuer+userId). Returns the stored account and whether it was new.
-    func upsert(_ account: Account) throws -> (Account, isNew: Bool) {
-        if let i = file.accounts.firstIndex(where: { $0.key == account.key }) {
-            var existing = file.accounts[i]
-            existing.displayName = account.displayName
-            existing.email = account.email
-            existing.avatarURL = account.avatarURL
-            existing.status = .active
-            file.accounts[i] = existing
-            try save(); return (existing, false)
-        }
-        guard file.accounts.count < Self.maxAccounts else { throw RegistryError.limitReached }
-        var new = account
-        new.sortIndex = (file.accounts.map(\.sortIndex).max() ?? -1) + 1
-        file.accounts.append(new)
-        try save(); return (new, true)
-    }
-
-    func setPortals(_ portals: [Portal], for accountId: String) throws {
-        file.portals[accountId] = portals
-        try save()
-    }
-
-    func setStatus(_ status: Account.Status, for id: String) throws {
-        guard let i = file.accounts.firstIndex(where: { $0.id == id }) else { return }
-        file.accounts[i].status = status
-        try save()
-    }
-
-    func setActive(_ selection: ActiveSelection?) throws {
-        file.active = selection
-        if let s = selection, let i = file.accounts.firstIndex(where: { $0.id == s.accountId }) {
-            file.accounts[i].lastActiveAt = .now
-            file.accounts[i].lastActivePortalId = s.portalId
-            if let pid = s.portalId, let p = file.portals[s.accountId]?.firstIndex(where: { $0.id == pid }) {
-                file.portals[s.accountId]?[p].lastUsedAt = .now
-            }
-        }
-        try save()
-    }
-
-    /// Removes the account; returns the next account to activate (most recently used).
-    func remove(_ id: String) throws -> Account? {
-        file.accounts.removeAll { $0.id == id }
-        file.portals[id] = nil
-        if file.active?.accountId == id { file.active = nil }
-        try save()
-        return file.accounts.max { $0.lastActiveAt < $1.lastActiveAt }
-    }
-
-    func defaultPortal(for accountId: String) -> Portal? {
-        let ps = portals(of: accountId)
-        let last = account(accountId)?.lastActivePortalId
-        return ps.first { $0.id == last } ?? ps.first(where: \.isDefault) ?? ps.first
-    }
-
-    private func save() throws {
-        let data = try JSONEncoder().encode(file)
-        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-    }
+    // accounts (sorted by sortIndex), active: ActiveSelection?, account(_ id:), account(for: AccountKey), portals(of:)
+    // upsert(_:) -> (Account, isNew: Bool)  dedupe by issuer+userId; throws RegistryError.limitReached past max
+    // setPortals(_:for:), setStatus(_:for:), setActive(_:)  (setActive also stamps lastActiveAt / lastUsedAt)
+    // remove(_:) -> Account?   returns the most recently used remaining account
+    // defaultPortal(for:) = lastActivePortalId ?? isDefault ?? first
 }
 ```
 
@@ -522,12 +438,7 @@ struct KeychainTokenStore: Sendable {
     let service: String          // "com.example.app.auth"
     let accessGroup: String?     // "<TEAMID>.com.example.shared" — read prefix at runtime
 
-    /// Info.plist: AppIdentifierPrefix = $(AppIdentifierPrefix)   (ends with ".")
-    static func sharedGroup(suffix: String) -> String? {
-        guard let prefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String
-        else { return nil }
-        return prefix + suffix
-    }
+    // Resolve accessGroup at runtime: Info.plist AppIdentifierPrefix = $(AppIdentifierPrefix) (ends with ".") + suffix.
 
     private func baseQuery(_ accountId: String?) -> [String: Any] {
         var q: [String: Any] = [
@@ -556,20 +467,8 @@ struct KeychainTokenStore: Sendable {
         guard status == errSecSuccess else { throw KeychainError(status) }
     }
 
-    func load(_ accountId: String) throws -> TokenSet {
-        var q = baseQuery(accountId)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &out)
-        guard status == errSecSuccess, let data = out as? Data else { throw KeychainError(status) }
-        return try JSONDecoder().decode(TokenSet.self, from: data)
-    }
-
-    func delete(_ accountId: String) throws {
-        let status = SecItemDelete(baseQuery(accountId) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError(status) }
-    }
+    // load(_:) -> TokenSet: SecItemCopyMatching(baseQuery + kSecReturnData, kSecMatchLimitOne), map OSStatus via KeychainError
+    // delete(_:): SecItemDelete(baseQuery(accountId)); treat errSecItemNotFound as success
 
     /// All items for this service in this group — used for reinstall orphan cleanup.
     func deleteAll() {
@@ -673,13 +572,8 @@ final class APIClient: Sendable {
     init(account: Account, directory: URL, tokens: TokenProvider) {
         let config = URLSessionConfiguration.ephemeral                 // private in-memory cookie jar
         config.urlCache = URLCache(memoryCapacity: 8 << 20, diskCapacity: 64 << 20,
-                                   directory: directory.appending(path: "http"))
-        config.requestCachePolicy = .useProtocolCachePolicy
-        config.httpCookieAcceptPolicy = .always
-        config.waitsForConnectivity = true
-        self.session = URLSession(configuration: config)
-        self.baseURL = account.baseURL
-        self.tokens = tokens
+                                   directory: directory.appending(path: "http"))   // per-account HTTP cache
+        self.session = URLSession(configuration: config); self.baseURL = account.baseURL; self.tokens = tokens
     }
 
     /// Scope is captured when the request is built, never read from a mutable global.
@@ -718,16 +612,10 @@ enum APIError: Error { case http(Int), forbidden(portalId: String?) }
 import Foundation
 import SwiftData
 
-@Model final class Item {
-    #Unique<Item>([\.portalId, \.serverId])                   // iOS 18; drop on iOS 17
-    var serverId: String
-    var portalId: String
-    var title: String
-    var updatedAt: Date
+// Every row carries portalId; #Unique<Item>([\.portalId, \.serverId]) on iOS 18 (drop on iOS 17).
+@Model final class Item { var serverId: String; var portalId: String; var title: String; var updatedAt: Date
     init(serverId: String, portalId: String, title: String, updatedAt: Date) {
-        self.serverId = serverId; self.portalId = portalId; self.title = title; self.updatedAt = updatedAt
-    }
-}
+        self.serverId = serverId; self.portalId = portalId; self.title = title; self.updatedAt = updatedAt } }
 
 enum AccountStorage {
     static func directory(for accountId: String) throws -> URL {
@@ -754,23 +642,9 @@ enum AccountStorage {
     }
 }
 
-/// Background-safe writer per account.
-@ModelActor actor AccountWriter {
-    func upsert(_ dtos: [(id: String, title: String, updatedAt: Date)], portalId: String) throws {
-        for dto in dtos {
-            let sid = dto.id
-            let existing = try modelContext.fetch(FetchDescriptor<Item>(
-                predicate: #Predicate { $0.serverId == sid && $0.portalId == portalId })).first
-            if let existing { existing.title = dto.title; existing.updatedAt = dto.updatedAt }
-            else { modelContext.insert(Item(serverId: sid, portalId: portalId, title: dto.title, updatedAt: dto.updatedAt)) }
-        }
-        try modelContext.save()
-    }
-    func purgePortal(_ portalId: String) throws {
-        try modelContext.delete(model: Item.self, where: #Predicate { $0.portalId == portalId })
-        try modelContext.save()
-    }
-}
+/// Background-safe writer per account: upsert(dtos, portalId:) keyed by (portalId, serverId),
+/// purgePortal(_:) deletes Items of that portal; both end with modelContext.save().
+@ModelActor actor AccountWriter { /* ... */ }
 ```
 
 Core Data equivalent: `let c = NSPersistentContainer(name: "Model"); c.persistentStoreDescriptions = [NSPersistentStoreDescription(url: dir.appending(path: "data.sqlite"))]`; on wipe call `c.persistentStoreCoordinator.destroyPersistentStore(at:type: .sqlite)` before removing the directory.
@@ -782,29 +656,10 @@ import Foundation
 import Observation
 import SwiftData
 
-@MainActor @Observable
-final class PortalScope: Identifiable {
-    let id = UUID()                       // view identity: new value on every portal switch
-    let portal: Portal
-    var permissions: Set<String>
-    private(set) var tasks: [Task<Void, Never>] = []
-    let scope: RequestScope
-
-    init(portal: Portal) {
-        self.portal = portal
-        self.permissions = portal.permissions
-        self.scope = RequestScope(accountId: portal.accountId, portalId: portal.id)
-    }
-
-    func track(_ task: Task<Void, Never>) { tasks.append(task) }
-    func can(_ permission: String) -> Bool { permissions.contains(permission) }
-
-    func teardown() {
-        tasks.forEach { $0.cancel() }
-        tasks.removeAll()
-        // close realtime socket subscription for this portal here
-    }
-}
+/// Portal-level scope: `id = UUID()` (new view identity per portal switch), portal, permissions,
+/// `scope: RequestScope`, tracked tasks; `can(_:)` checks permissions; `teardown()` cancels tasks
+/// and closes this portal's realtime subscription.
+@MainActor @Observable final class PortalScope: Identifiable { /* ... */ init(portal: Portal) {} func teardown() {} }
 
 @MainActor @Observable
 final class Session: Identifiable {
@@ -872,28 +727,12 @@ final class AppModel {
     private(set) var accounts: [Account] = []
     var toast: String?
 
-    let registry: AccountRegistry
-    let keychain: KeychainTokenStore
-    let auth: AuthAPI
-    let push: PushRegistrar
+    let registry: AccountRegistry, keychain: KeychainTokenStore, auth: AuthAPI, push: PushRegistrar
     var apnsToken: Data?
     private var switchTask: Task<Void, Never>?
+    // init(registry:keychain:auth:push:) assigns the dependencies.
 
-    init(registry: AccountRegistry, keychain: KeychainTokenStore, auth: AuthAPI, push: PushRegistrar) {
-        self.registry = registry; self.keychain = keychain; self.auth = auth; self.push = push
-    }
-
-    func launch() async {
-        accounts = await registry.accounts
-        cleanUpKeychainAfterReinstall(store: keychain, registryIsEmpty: accounts.isEmpty)
-        if let sel = await registry.active, accounts.contains(where: { $0.id == sel.accountId }) {
-            await performSwitch(accountId: sel.accountId, portalId: sel.portalId)
-        } else if let first = accounts.max(by: { $0.lastActiveAt < $1.lastActiveAt }) {
-            await performSwitch(accountId: first.id, portalId: nil)
-        } else {
-            phase = .signedOut
-        }
-    }
+    // launch(): reinstall cleanup, then performSwitch to registry.active ?? most recently used, else .signedOut
 
     // MARK: Account switch — serialised; a newer request cancels an older one.
     func switchAccount(to accountId: String, portalId: String? = nil) {
@@ -937,37 +776,13 @@ final class AppModel {
         onIdentityChanged(account: session.account, portal: portal)
     }
 
-    /// 403 membership / push hint "portal_removed".
-    func portalRevoked(_ portalId: String, accountId: String) async {
-        let remaining = await registry.portals(of: accountId).filter { $0.id != portalId }
-        try? await registry.setPortals(remaining, for: accountId)
-        if let session, session.account.id == accountId {
-            try? await session.writer.purgePortal(portalId)
-            if session.portal?.portal.id == portalId {
-                toast = "You no longer have access to this workspace"
-                if let next = remaining.max(by: { ($0.lastUsedAt ?? .distantPast) < ($1.lastUsedAt ?? .distantPast) }) {
-                    await switchPortal(to: next.id)
-                } else {
-                    session.teardownPortalOnly()              // account empty state
-                }
-            }
-        }
-    }
+    // portalRevoked(_:accountId:) (403 / push hint "portal_removed"): drop from registry cache, writer.purgePortal,
+    // and if it is the current portal: toast, switchPortal to most recently used remaining, else teardownPortalOnly().
 
-    // MARK: Add account
-    func didSignIn(account candidate: Account, tokens: TokenSet, portals: [Portal]) async throws {
-        try keychain.save(tokens, for: candidate.id)          // secret first
-        let stored: Account, isNew: Bool
-        do { (stored, isNew) = try await registry.upsert(candidate) }
-        catch { try? keychain.delete(candidate.id); throw error }  // no orphan item
-        try await registry.setPortals(portals, for: stored.id)
-        if !isNew { toast = "Already signed in — switched to \(stored.displayName)" }
-        if let apnsToken, let s = try? Session(account: stored, keychain: keychain, auth: auth, onRevoked: { _ in }) {
-            await push.register(deviceToken: apnsToken, for: stored, api: s.api)
-            s.teardown()
-        }
-        switchAccount(to: stored.id)
-    }
+    // MARK: Add account (sketch)
+    // didSignIn(account:tokens:portals:): keychain.save FIRST; registry.upsert (on failure delete the keychain item,
+    // no orphans); setPortals; if !isNew toast "Already signed in — switched"; register APNs token for the new
+    // account with a temporary Session's api; then switchAccount(to:).
 
     // MARK: Sign out
     func signOut(accountId: String) async {
@@ -990,58 +805,19 @@ final class AppModel {
         await updateBadge()
     }
 
-    func signOutAll() async {
-        for a in accounts { await signOut(accountId: a.id) }
-    }
-
-    // MARK: Helpers
+    // MARK: Helpers (sketch)
     private func markNeedsReauth(_ id: String) async {
         try? await registry.setStatus(.needsReauth, for: id)
         accounts = await registry.accounts
         if session?.account.id == id { phase = .needsReauth(id) }   // others: banner in switcher only
     }
-
-    private func resolvePortal(account: Account, preferred: String?) async -> Portal? {
-        let ps = await registry.portals(of: account.id)
-        if let preferred, let p = ps.first(where: { $0.id == preferred }) { return p }
-        return await registry.defaultPortal(for: account.id)
-    }
-
-    private func refreshPortalsInBackground(for session: Session) {
-        let task = Task { [registry] in
-            struct PortalDTO: Decodable, Sendable { let id, name, role: String; let permissions: [String]; let isDefault: Bool }
-            let scope = RequestScope(accountId: session.account.id, portalId: nil)
-            guard let dtos: [PortalDTO] = try? await session.api.send("/me/portals", scope: scope) else { return }
-            let old = await registry.portals(of: session.account.id)
-            let ps = dtos.map { d in Portal(id: d.id, accountId: session.account.id, name: d.name, role: d.role,
-                                            permissions: Set(d.permissions),
-                                            lastUsedAt: old.first { $0.id == d.id }?.lastUsedAt, isDefault: d.isDefault) }
-            try? await registry.setPortals(ps, for: session.account.id)
-            if let current = session.portal?.portal.id, !ps.contains(where: { $0.id == current }) {
-                await self.portalRevoked(current, accountId: session.account.id)
-            }
-        }
-        session.portal?.track(task)
-    }
-
-    private func onIdentityChanged(account: Account?, portal: Portal?) {
-        // Analytics.setUserId(account?.id)  — opaque id, never email
-        // Analytics.setGroup(portal?.id)
-        // Purchases.shared.logIn(account.id) on ACCOUNT change only; logOut() when nil
-        // WidgetCenter.shared.reloadAllTimelines()
-    }
-
-    private func removeDeliveredNotifications(accountId: String) async {
-        let center = UNUserNotificationCenter.current()
-        let ids = await center.deliveredNotifications()
-            .filter { ($0.request.content.userInfo["account_id"] as? String) == accountId }
-            .map(\.request.identifier)
-        center.removeDeliveredNotifications(withIdentifiers: ids)
-    }
-
-    func updateBadge(unreadByAccount: [String: Int] = [:]) async {
-        try? await UNUserNotificationCenter.current().setBadgeCount(unreadByAccount.values.reduce(0, +))
-    }
+    // resolvePortal: preferred if still a member, else registry.defaultPortal(for:)
+    // refreshPortalsInBackground: GET /me/portals, keep lastUsedAt, setPortals; current portal missing → portalRevoked.
+    //   Task is tracked on session.portal so it is cancelled on switch.
+    // onIdentityChanged: Analytics.setUserId(opaque id, never email), setGroup(portal id);
+    //   Purchases.logIn on ACCOUNT change only, logOut when nil; WidgetCenter.reloadAllTimelines()
+    // removeDeliveredNotifications: filter deliveredNotifications() by userInfo["account_id"], remove those ids
+    // updateBadge: setBadgeCount(sum of unread across accounts)
 }
 ```
 
@@ -1070,7 +846,7 @@ enum EntryDecision: Equatable {
     case ignore
 }
 
-/// Pure function → trivially unit-testable (M20–M26).
+/// Pure function → trivially unit-testable (M16–M21).
 func decide(_ req: EntryRequest, active: ActiveSelection?, accounts: [Account],
             portals: [String: [Portal]]) -> EntryDecision {
     let candidates: [Account]
@@ -1100,85 +876,18 @@ func decide(_ req: EntryRequest, active: ActiveSelection?, accounts: [Account],
         : .confirmSwitch(accountId: account.id, portal: req.portalId, then: req.target)
 }
 
-extension EntryRequest {
-    /// From a notification tap: payload {"account_id": "...", "portal_id": "...", "item_id": "..."}
-    init?(push userInfo: [AnyHashable: Any]) {
-        guard let aid = userInfo["account_id"] as? String else { return nil }
-        self.init(accountId: aid, portalId: userInfo["portal_id"] as? String,
-                  target: (userInfo["item_id"] as? String).map(RouteTarget.item) ?? .portalHome,
-                  userInitiatedTap: true)
-    }
-}
+// EntryRequest(push:) reads {"account_id","portal_id","item_id"} with userInitiatedTap = true.
 ```
 
-Unit tests for the router:
-
-```swift
-import Testing
-
-@Suite struct EntryRoutingTests {
-    let a = Account(id: "A", key: .init(issuer: "eu", userId: "1"), baseURL: URL(string: "https://eu.x")!,
-                    displayName: "A", email: "a@x", purchaseUUID: UUID())
-    let b = Account(id: "B", key: .init(issuer: "us", userId: "1"), baseURL: URL(string: "https://us.x")!,
-                    displayName: "B", email: "b@x", purchaseUUID: UUID())
-    var portals: [String: [Portal]] {[
-        "A": [Portal(id: "p1", accountId: "A", name: "Acme", role: "admin", permissions: [], isDefault: true),
-              Portal(id: "p2", accountId: "A", name: "Beta", role: "viewer", permissions: [], isDefault: false)],
-        "B": [Portal(id: "p3", accountId: "B", name: "Gamma", role: "admin", permissions: [], isDefault: true)],
-    ]}
-    let active = ActiveSelection(accountId: "A", portalId: "p1")
-
-    @Test func pushForActiveScopeNavigates() {
-        let r = EntryRequest(accountId: "A", portalId: "p1", target: .item("42"), userInitiatedTap: true)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals) == .navigate(.item("42")))
-    }
-    @Test func pushForInactivePortalSwitchesPortal() {
-        let r = EntryRequest(accountId: "A", portalId: "p2", target: .item("7"), userInitiatedTap: true)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals) == .switchPortal("p2", then: .item("7")))
-    }
-    @Test func pushForInactiveAccountSwitchesAccount() {
-        let r = EntryRequest(accountId: "B", portalId: "p3", target: .portalHome, userInitiatedTap: true)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals)
-                == .switchAccount("B", portal: "p3", then: .portalHome))
-    }
-    @Test func deepLinkToOtherAccountAsksFirst() {
-        let r = EntryRequest(accountId: nil, portalId: "p3", target: .item("9"), userInitiatedTap: false)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals)
-                == .confirmSwitch(accountId: "B", portal: "p3", then: .item("9")))
-    }
-    @Test func deepLinkToUnknownPortalOffersAddAccount() {
-        let r = EntryRequest(accountId: nil, portalId: "zzz", target: .portalHome, userInitiatedTap: false)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals) == .addAccount(pending: r))
-    }
-    @Test func pushForSignedOutAccountIgnored() {
-        let r = EntryRequest(accountId: "C", portalId: nil, target: .portalHome, userInitiatedTap: true)
-        #expect(decide(r, active: active, accounts: [a, b], portals: portals) == .ignore)
-    }
-}
-```
+`decide` is pure: unit-test each matrix row (active scope navigates, inactive portal → switchPortal, inactive account → switchAccount, deep link to other account → confirmSwitch, unknown portal → addAccount, signed-out account's push → ignore).
 
 ### A.9 Root view wiring (identity resets, privacy overlay)
 
 ```swift
 import SwiftUI
 
-@main struct MultiAccountApp: App {
-    @State private var model = AppModel(
-        registry: AccountRegistry(appGroup: "group.com.example.shared"),
-        keychain: KeychainTokenStore(service: "com.example.app.auth",
-                                     accessGroup: KeychainTokenStore.sharedGroup(suffix: "com.example.shared")),
-        auth: LiveAuthAPI(), push: LivePushRegistrar())
-    @Environment(\.scenePhase) private var scenePhase
-
-    var body: some Scene {
-        WindowGroup {
-            RootView()
-                .environment(model)
-                .overlay { if scenePhase != .active { PrivacyCover() } }   // app-switcher snapshot
-                .task { await model.launch() }
-        }
-    }
-}
+// App: inject AppModel via .environment, `.task { await model.launch() }`,
+// `.overlay { if scenePhase != .active { PrivacyCover() } }` for the app-switcher snapshot.
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
@@ -1198,36 +907,9 @@ struct RootView: View {
     }
 }
 
-struct AccountRoot: View {
-    let session: Session
-    @State private var path = NavigationPath()
-    var body: some View {
-        if let portal = session.portal {
-            NavigationStack(path: $path) {
-                PortalHome(scope: portal)
-                    .toolbar { ToolbarItem(placement: .topBarLeading) { AccountSwitcherButton() } }
-            }
-            .id(portal.id)                               // portal switch resets stack + portal @State
-        } else {
-            NoPortalsView()                              // join / create / invitations
-        }
-    }
-}
-
-struct PortalHome: View {
-    let scope: PortalScope
-    @Query private var items: [Item]
-    init(scope: PortalScope) {
-        self.scope = scope
-        let pid = scope.portal.id
-        _items = Query(filter: #Predicate<Item> { $0.portalId == pid }, sort: \.updatedAt, order: .reverse)
-    }
-    var body: some View {
-        List(items) { Text($0.title) }
-            .navigationTitle(scope.portal.name)
-            .toolbar { if scope.can("item.create") { Button("New", systemImage: "plus") {} } }
-    }
-}
+// AccountRoot: if session.portal != nil → NavigationStack(path:) { PortalHome(scope:) }.id(portal.id)
+//   (portal switch resets stack + portal @State); else NoPortalsView (join / create / invitations).
+// PortalHome: @Query filtered by `$0.portalId == scope.portal.id`; gate actions with scope.can("item.create").
 ```
 
 `LiveAuthAPI`, `LivePushRegistrar`, `WelcomeView`, `SwitchingView`, `ReauthView`, `NoPortalsView`, `AccountSwitcherButton` and `PrivacyCover` are app-specific. Entitlements to add: **Keychain Sharing** (`$(AppIdentifierPrefix)com.example.shared`, plus your private group first if needed), **App Groups** (`group.com.example.shared`) on app + NSE + widgets + sibling apps, **Push Notifications**, **Background Modes** (remote notifications, background fetch/processing), and `AppIdentifierPrefix = $(AppIdentifierPrefix)` in Info.plist for runtime group resolution.

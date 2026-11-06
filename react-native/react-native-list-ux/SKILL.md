@@ -333,78 +333,35 @@ Search        primary    offset         25    —            no            — /
 
 | # | Scenario | Expected |
 |---|---|---|
-| L1 | First load, slow network (primary list) | Skeleton after the delay, matches row layout; no flash on fast responses |
-| L2 | First load, secondary list | Small spinner, not a skeleton |
-| L3 | First load fails | Full-screen error with Retry; Retry works |
-| L4 | Zero items | Empty state with action |
-| L5 | Scroll to end | Exactly one next-page request; footer spinner; rows appended; no jump |
-| L6 | Short first page (content < viewport) | Loads more until filled or end; no loop at end |
-| L7 | Next page fails | Rows kept; footer error + Retry; no auto-retry loop |
-| L8 | End of list | Footer "caught up"; no more requests |
-| L9 | Duplicate items across pages (offset API + insert) | No duplicate rows / key warnings |
-| L10 | Pull to refresh | Data stays; spinner only while user-triggered; updated rows |
-| L11 | Refresh while loading more | No duplicated/lost pages; consistent order |
-| L12 | Refresh fails | Old data + toast |
-| L13 | Offline cold start with persisted cache | Cached rows + offline banner; auto-refresh on reconnect |
-| L14 | Offline, no cache | Offline-empty state, not infinite skeleton |
-| L15 | Swipe trailing → delete | Row removed optimistically, undo toast; undo restores in place |
-| L16 | Delete fails on server | Row restored + error toast |
-| L17 | Open swipe on row A then row B | A closes |
-| L18 | Scroll fast after swiping (FlashList) | No recycled row appears pre-opened |
-| L19 | Screen reader: row actions | Actions available via rotor/actions menu |
-| L20 | Search typing | Debounced; old request cancelled; paging reset; scroll to top |
-| L21 | Filter change → back → forward | Filters restored from params |
-| L22 | Fast scroll through thumbnails | Correct image per row (no recycled-image flash); placeholders; memory stable |
-| L23 | Realtime insert while scrolled down | Position kept; "new items" pill |
-| L24 | Tap tab while on list | Scrolls to top |
-| L25 | Detail → back | Scroll position and data unchanged; no refetch flash |
-| L26 | Selection mode + refresh | Selection pruned to existing items; bulk bar count correct |
-| L27 | Largest font size | Rows wrap, no clipping |
-| L28 | Reduce motion | No shimmer/fade/layout animations |
-| L29 | Low-end Android, release build | ~60 fps scroll, minimal blank cells |
-| L30 | Logout | Caches (query + image disk) cleared |
+| L1 | First load, slow network | Primary list: skeleton after the delay, matches row layout, no flash on fast responses; secondary list: small spinner |
+| L2 | First load fails / zero items | Full-screen error with working Retry / empty state with action |
+| L3 | Scroll to end | Exactly one next-page request; footer spinner; rows appended, no jump; at the end "caught up" footer and no more requests |
+| L4 | Short first page (content < viewport) | Loads more until filled or end; no loop at end |
+| L5 | Next page fails | Rows kept; footer error + Retry; no auto-retry loop |
+| L6 | Duplicate items across pages (offset API + insert) | No duplicate rows / key warnings |
+| L7 | Pull to refresh | Data stays; spinner only while user-triggered; updated rows |
+| L8 | Refresh while loading more | No duplicated/lost pages; consistent order |
+| L9 | Refresh fails | Old data + toast |
+| L10 | Offline cold start | With persisted cache: cached rows + offline banner, auto-refresh on reconnect; without: offline-empty state, not infinite skeleton |
+| L11 | Swipe trailing → delete | Row removed optimistically, undo toast restores in place; server failure restores row + error toast |
+| L12 | Open swipe on row A then row B; fast scroll after (FlashList) | A closes; no recycled row appears pre-opened |
+| L13 | Screen reader: row actions | Actions available via rotor/actions menu |
+| L14 | Search typing | Debounced; old request cancelled; paging reset; scroll to top |
+| L15 | Filter change → back → forward | Filters restored from params |
+| L16 | Fast scroll through thumbnails | Correct image per row (no recycled-image flash); placeholders; memory stable |
+| L17 | Realtime insert while scrolled down | Position kept; "new items" pill |
+| L18 | Tap tab while on list / detail → back | Scrolls to top / scroll position and data unchanged, no refetch flash |
+| L19 | Selection mode + refresh | Selection pruned to existing items; bulk bar count correct |
+| L20 | Largest font size; reduce motion | Rows wrap without clipping; no shimmer/fade/layout animations |
+| L21 | Low-end Android, release build | ~60 fps scroll, minimal blank cells |
+| L22 | Logout | Caches (query + image disk) cleared |
 
 ### 16.3 RNTL examples
 
-```tsx
-it('loads the next page exactly once at the end', async () => {
-  const fetchPage = jest.fn()
-    .mockResolvedValueOnce({ items: makeItems(0, 20), nextCursor: 'c1' })
-    .mockResolvedValueOnce({ items: makeItems(20, 40), nextCursor: null });
-  render(<InboxScreen fetchPage={fetchPage} />, { wrapper: createWrapper() });
-
-  expect(await screen.findByText('Item 0')).toBeOnTheScreen();
-  const list = screen.getByTestId('inbox-list');
-  fireEvent(list, 'onEndReached');
-  fireEvent(list, 'onEndReached'); // duplicate call must be ignored
-  expect(await screen.findByText('Item 20')).toBeOnTheScreen();
-  expect(fetchPage).toHaveBeenCalledTimes(2);
-  expect(screen.getByText("You're all caught up")).toBeOnTheScreen();
-});
-
-it('shows footer retry when the next page fails and keeps rows', async () => {
-  const fetchPage = jest.fn()
-    .mockResolvedValueOnce({ items: makeItems(0, 20), nextCursor: 'c1' })
-    .mockRejectedValueOnce(new Error('500'))
-    .mockResolvedValueOnce({ items: makeItems(20, 25), nextCursor: null });
-  render(<InboxScreen fetchPage={fetchPage} />, { wrapper: createWrapper() });
-  await screen.findByText('Item 0');
-  fireEvent(screen.getByTestId('inbox-list'), 'onEndReached');
-  fireEvent.press(await screen.findByRole('button', { name: 'Retry' }));
-  expect(await screen.findByText('Item 24')).toBeOnTheScreen();
-  expect(screen.getByText('Item 0')).toBeOnTheScreen();
-});
-
-it('deletes optimistically and rolls back on error', async () => {
-  const deleteItem = jest.fn().mockRejectedValue(new Error('nope'));
-  render(<InboxScreen fetchPage={onePage} deleteItem={deleteItem} />, { wrapper: createWrapper() });
-  const row = await screen.findByLabelText(/Item 3/);
-  fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'delete' } });
-  expect(screen.queryByText('Item 3')).toBeNull();
-  expect(await screen.findByText('Item 3')).toBeOnTheScreen(); // restored
-  expect(screen.getByText(/Couldn't delete/)).toBeOnTheScreen();
-});
-```
+Sketches (RNTL + fresh `QueryClient` wrapper, `fetchPage`/`deleteItem` injected as `jest.fn()`):
+- **Load more once**: two mocked pages (cursor then `null`); after `findByText('Item 0')` fire `onEndReached` on `inbox-list` twice → `fetchPage` called exactly 2 times, "You're all caught up" shown.
+- **Footer retry**: page 1 resolves, page 2 rejects then resolves; `onEndReached` → press `Retry` → new rows appear and `Item 0` is still on screen.
+- **Optimistic delete rollback**: `deleteItem` rejects; fire `accessibilityAction` `{ actionName: 'delete' }` on the row → row disappears, then is restored with a "Couldn't delete" toast.
 
 ## 17. Common bugs to look for in review
 
@@ -437,7 +394,7 @@ When asked to **review/audit**:
 1. **Summary**: libraries + versions (FlashList v1/v2, Query v4/v5, Reanimated, RNGH, expo-image), New Architecture on/off, the list spec table (§1) for each list screen
 2. **Checklist results**: sections 2–15 with ✅ Pass / ❌ Fail / ⚠️ Needs check, with file:line
 3. **Critical issues first** (duplicate/missing rows, request loops, data loss on error, wrong images, crashes/OOM, inaccessible actions) with fix code
-4. **Testing gaps**: L1–L30 not covered, plus suggested RNTL tests
+4. **Testing gaps**: L1–L22 not covered, plus suggested RNTL tests
 
 When asked to **implement**: confirm the versions, start from the Appendix, adapt the API contract, row layout and actions, and remove the parts the product doesn't need (swipe, selection, realtime). Then list what to verify by hand: release-build perf on a low-end Android device, VoiceOver/TalkBack, offline, and the largest font size.
 
@@ -454,30 +411,17 @@ Assumes `@shopify/flash-list` v2, `@tanstack/react-query` v5, `react-native-rean
 ```ts
 // list/types.ts
 export type Item = {
-  id: string;
-  title: string;
-  subtitle: string;
-  thumbUrl: string | null;
-  blurhash?: string | null;
-  unread: boolean;
-  createdAt: string;
+  id: string; title: string; subtitle: string;
+  thumbUrl: string | null; blurhash?: string | null;
+  unread: boolean; createdAt: string;
 };
 
 export type Page = { items: Item[]; nextCursor: string | null };
 
-export async function fetchItemsPage(
-  params: { cursor: string | null; q: string; limit: number },
-  signal?: AbortSignal,
-): Promise<Page> {
-  const url = new URL('https://api.example.com/items');
-  if (params.cursor) url.searchParams.set('cursor', params.cursor);
-  if (params.q) url.searchParams.set('q', params.q);
-  url.searchParams.set('limit', String(params.limit));
-  const res = await fetch(url.toString(), { signal });
-  if (!res.ok) throw new HttpError(res.status);
-  return res.json();
-}
-
+// fetchItemsPage({ cursor, q, limit }, signal?): GET /items with cursor/q/limit query params,
+// passes the AbortSignal to fetch, throws HttpError(status) when !res.ok, returns res.json() as Page.
+export declare function fetchItemsPage(
+  params: { cursor: string | null; q: string; limit: number }, signal?: AbortSignal): Promise<Page>;
 export class HttpError extends Error {
   constructor(public status: number) { super(`HTTP ${status}`); }
 }
@@ -492,16 +436,9 @@ export type ListState<T> =
   | { kind: 'endReached'; items: T[]; refreshing: boolean };
 
 export function deriveListState<T>(q: {
-  enabled: boolean;
-  items: T[] | undefined;
-  isPending: boolean;
-  fetchStatus: 'fetching' | 'paused' | 'idle';
-  isError: boolean;
-  isFetchNextPageError: boolean;
-  error: unknown;
-  isFetchingNextPage: boolean;
-  hasNextPage: boolean;
-  isUserRefreshing: boolean;
+  enabled: boolean; items: T[] | undefined; isPending: boolean;
+  fetchStatus: 'fetching' | 'paused' | 'idle'; isError: boolean; isFetchNextPageError: boolean;
+  error: unknown; isFetchingNextPage: boolean; hasNextPage: boolean; isUserRefreshing: boolean;
 }): ListState<T> {
   if (!q.enabled) return { kind: 'idle' };
   if (q.isPending || !q.items) {
@@ -577,16 +514,9 @@ export function useItemsList(q: string) {
   const retryMore = useCallback(() => { query.fetchNextPage(); }, [query.fetchNextPage]);
 
   const state = deriveListState<Item>({
-    enabled,
-    items,
-    isPending: query.isPending,
-    fetchStatus: query.fetchStatus,
-    isError: query.isError,
-    isFetchNextPageError: query.isFetchNextPageError,
-    error: query.error,
-    isFetchingNextPage: query.isFetchingNextPage,
-    hasNextPage: !!query.hasNextPage,
-    isUserRefreshing,
+    enabled, items, isPending: query.isPending, fetchStatus: query.fetchStatus,
+    isError: query.isError, isFetchNextPageError: query.isFetchNextPageError, error: query.error,
+    isFetchingNextPage: query.isFetchingNextPage, hasNextPage: !!query.hasNextPage, isUserRefreshing,
   });
 
   return {
@@ -633,78 +563,15 @@ export function useDelayedFlag(active: boolean, delay = 200, minDuration = 400) 
 ```
 
 ```tsx
-// list/Skeleton.tsx
-import React, { createContext, useContext, useEffect } from 'react';
-import { StyleSheet, View, type ViewStyle, type DimensionValue } from 'react-native';
-import Animated, {
-  Easing, interpolate, useAnimatedStyle, useReducedMotion, useSharedValue,
-  withRepeat, withTiming, type SharedValue,
-} from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
-
-const ShimmerClock = createContext<SharedValue<number> | null>(null);
-
-export function SkeletonProvider({ children }: { children: React.ReactNode }) {
-  const progress = useSharedValue(0);
-  const reduceMotion = useReducedMotion();
-  useEffect(() => {
-    if (reduceMotion) return;
-    progress.value = withRepeat(withTiming(1, { duration: 1200, easing: Easing.linear }), -1);
-  }, [reduceMotion, progress]);
-  return <ShimmerClock.Provider value={reduceMotion ? null : progress}>{children}</ShimmerClock.Provider>;
-}
-
-export function Bone({ width, height, radius = 6, style }: {
-  width: DimensionValue; height: number; radius?: number; style?: ViewStyle;
-}) {
-  const progress = useContext(ShimmerClock);
-  const band = useAnimatedStyle(() => ({
-    transform: [{ translateX: interpolate(progress ? progress.value : 0, [0, 1], [-200, 400]) }],
-  }));
-  return (
-    <View style={[styles.bone, { width, height, borderRadius: radius }, style]}>
-      {progress && (
-        <Animated.View style={[StyleSheet.absoluteFill, band]}>
-          <LinearGradient
-            colors={['transparent', 'rgba(255,255,255,0.45)', 'transparent']}
-            start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }}
-            style={{ width: 200, height: '100%' }}
-          />
-        </Animated.View>
-      )}
-    </View>
-  );
-}
-
-// Must mirror ItemRow's layout exactly (padding, thumb size, line heights).
-export function ItemRowSkeleton() {
-  return (
-    <View style={rowStyles.row}>
-      <Bone width={56} height={56} radius={8} />
-      <View style={rowStyles.text}>
-        <Bone width="70%" height={16} />
-        <Bone width="45%" height={14} style={{ marginTop: 8 }} />
-      </View>
-    </View>
-  );
-}
-
-export function ListSkeleton({ count = 8 }: { count?: number }) {
-  return (
-    <SkeletonProvider>
-      <View
-        accessible accessibilityLabel="Loading" accessibilityRole="progressbar"
-        importantForAccessibility="yes"
-      >
-        <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
-          {Array.from({ length: count }, (_, i) => <ItemRowSkeleton key={i} />)}
-        </View>
-      </View>
-    </SkeletonProvider>
-  );
-}
-
-const styles = StyleSheet.create({ bone: { backgroundColor: '#E6E8EB', overflow: 'hidden' } });
+// list/Skeleton.tsx — sketch:
+// - SkeletonProvider: one shared Reanimated clock (useSharedValue + withRepeat(withTiming(1, 1200ms linear)))
+//   in context so every bone animates in sync; provides null when useReducedMotion() → static bones.
+// - Bone({ width, height, radius }): grey View (overflow hidden) with an Animated.View translateX band
+//   holding an expo-linear-gradient transparent→white(0.45)→transparent sweep.
+// - ItemRowSkeleton: MUST mirror ItemRow's layout (56pt thumb bone + 70%/45% text bones, rowStyles).
+// - ListSkeleton({ count = 8 }): SkeletonProvider > View accessible accessibilityLabel="Loading"
+//   accessibilityRole="progressbar", with the bones hidden from accessibility.
+import { StyleSheet } from 'react-native';
 export const rowStyles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, minHeight: 80 },
   text: { flex: 1, marginLeft: 12 },
@@ -734,11 +601,7 @@ export function thumbUrl(url: string, sizePt: number) {
   return `${url}${url.includes('?') ? '&' : '?'}w=${bucket}&h=${bucket}&fit=cover&format=webp`;
 }
 
-type Props = {
-  item: Item;
-  onOpen: (id: string) => void;
-  selected?: boolean;
-};
+type Props = { item: Item; onOpen: (id: string) => void; selected?: boolean };
 
 export const ItemRow = memo(function ItemRow({ item, onOpen, selected }: Props) {
   const reduceMotion = useReducedMotion();
@@ -774,15 +637,9 @@ export const ItemRow = memo(function ItemRow({ item, onOpen, selected }: Props) 
   );
 });
 
-const styles = StyleSheet.create({
-  bg: { backgroundColor: 'white' },
-  pressed: { opacity: 0.7 },
-  thumb: { width: THUMB, height: THUMB, borderRadius: 8, backgroundColor: '#E6E8EB' },
-  title: { fontSize: 16, color: '#111' },
-  unread: { fontWeight: '600' },
-  subtitle: { fontSize: 14, color: '#555', marginTop: 2 },
-  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#0A84FF', marginLeft: 8 },
-});
+// styles: bg, pressed (opacity .7), thumb (56x56, radius 8, grey bg), title, unread (weight 600),
+// subtitle, dot (10pt accent circle) — use theme tokens.
+declare const styles: Record<'bg' | 'pressed' | 'thumb' | 'title' | 'unread' | 'subtitle' | 'dot', object>;
 ```
 
 The inline `onPress` closure is fine here because the row is memoized on `item`/`onOpen`; the closure is recreated only when the row re-renders anyway.
@@ -792,40 +649,23 @@ The inline `onPress` closure is fine here because the row is memoized on `item`/
 ```tsx
 // list/SwipeableRow.tsx
 import React, { useCallback, useEffect, useRef } from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
 import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
-import Animated, { useAnimatedStyle, interpolate, Extrapolation, type SharedValue } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
 // Shared "currently open" ref, owned by the screen.
 export type OpenRowRef = React.MutableRefObject<SwipeableMethods | null>;
 
 type Props = {
-  id: string;
-  openRowRef: OpenRowRef;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onToggleRead: (id: string) => void;
-  unread: boolean;
-  disabled?: boolean;
-  children: React.ReactNode;
+  id: string; openRowRef: OpenRowRef; unread: boolean; disabled?: boolean; children: React.ReactNode;
+  onArchive: (id: string) => void; onDelete: (id: string) => void; onToggleRead: (id: string) => void;
 };
 
-function Action({ label, color, onPress, drag, side }: {
-  label: string; color: string; onPress: () => void;
-  drag: SharedValue<number>; side: 'left' | 'right';
-}) {
-  const style = useAnimatedStyle(() => {
-    const d = side === 'right' ? -drag.value : drag.value;
-    return { transform: [{ scale: interpolate(d, [0, 80], [0.6, 1], Extrapolation.CLAMP) }] };
-  });
-  return (
-    <Pressable onPress={onPress} style={[styles.action, { backgroundColor: color }]}
-      accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Animated.View style={style}><Text style={styles.actionText}>{label}</Text></Animated.View>
-    </Pressable>
-  );
-}
+// Action({ label, color, onPress, drag, side }): Pressable (84pt wide, hidden from accessibility —
+// the row exposes accessibilityActions instead) whose label scales 0.6→1 with the drag
+// SharedValue via useAnimatedStyle + interpolate(..., Extrapolation.CLAMP).
+declare function Action(p: { label: string; color: string; onPress: () => void;
+  drag: SharedValue<number>; side: 'left' | 'right' }): React.JSX.Element;
 
 export function SwipeableRow({
   id, openRowRef, onArchive, onDelete, onToggleRead, unread, disabled, children,
@@ -889,10 +729,6 @@ export function SwipeableRow({
   );
 }
 
-const styles = StyleSheet.create({
-  action: { width: 84, justifyContent: 'center', alignItems: 'center' },
-  actionText: { color: 'white', fontWeight: '600' },
-});
 ```
 
 If the installed RNGH version doesn't forward accessibility props from `ReanimatedSwipeable` to its container, put `accessibilityActions` on the row `Pressable` instead (that's also the element VoiceOver focuses). Full swipe: add a wide action panel and commit in `onSwipeableOpen(direction)`.
@@ -936,22 +772,10 @@ For undo, delay `mutate` until the toast times out (keep the removed item + snap
 
 ```tsx
 // app/(tabs)/inbox.tsx
-import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { FlashList, type FlashListRef } from '@shopify/flash-list';
-import { useScrollToTop } from '@react-navigation/native';
-import { useNetInfo } from '@react-native-community/netinfo';
-import { router } from 'expo-router';
-import type { SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
-import { useItemsList } from '@/list/useItemsList';
-import { useDeleteItem } from '@/list/useDeleteItem';
-import { useDelayedFlag } from '@/list/useDelayedFlag';
-import { ListSkeleton } from '@/list/Skeleton';
-import { ItemRow } from '@/list/ItemRow';
-import { SwipeableRow } from '@/list/SwipeableRow';
-import { useDebouncedValue } from '@/lib/useDebouncedValue';
-import { api, toast } from '@/lib';
-import type { Item } from '@/list/types';
+// imports: react, react-native (ActivityIndicator, Pressable, Text, TextInput, View), FlashList +
+// FlashListRef, useScrollToTop, useNetInfo, expo-router `router`, SwipeableMethods, and the
+// list/* modules above (useItemsList, useDeleteItem, useDelayedFlag, ListSkeleton, ItemRow,
+// SwipeableRow, Item) plus app helpers useDebouncedValue, api, toast.
 
 export default function InboxScreen() {
   const [text, setText] = useState('');
@@ -993,28 +817,10 @@ export default function InboxScreen() {
     }
   };
 
-  const Footer = () => {
-    if (items.length === 0) return null;
-    switch (state.kind) {
-      case 'loadingMore':
-        return <View style={styles.footer}><ActivityIndicator accessibilityLabel="Loading more" /></View>;
-      case 'error':
-        return (
-          <View style={styles.footer}>
-            <Text style={styles.muted}>Couldn't load more.</Text>
-            <Pressable onPress={retryMore} accessibilityRole="button" hitSlop={12}>
-              <Text style={styles.link}>Retry</Text>
-            </Pressable>
-          </View>
-        );
-      case 'endReached':
-        return items.length > 10
-          ? <View style={styles.footer}><Text style={styles.muted}>You're all caught up</Text></View>
-          : null;
-      default:
-        return <View style={styles.footer} />; // reserve height, avoids jumps
-    }
-  };
+  // Footer: null when no items; 'loadingMore' → ActivityIndicator (accessibilityLabel "Loading more");
+  // 'error' → "Couldn't load more." + Retry (retryMore, hitSlop 12); 'endReached' → "You're all caught up"
+  // only when items.length > 10; otherwise an empty footer View that reserves height (avoids jumps).
+  const Footer = () => (items.length === 0 ? null : <View style={styles.footer} />); // see comment
 
   return (
     <View style={styles.screen}>
@@ -1050,32 +856,11 @@ export default function InboxScreen() {
   );
 }
 
-function Message({ title, body, action }: { title: string; body?: string; action?: { label: string; onPress: () => void } }) {
-  return (
-    <View style={styles.message} accessibilityLiveRegion="polite">
-      <Text style={styles.title} accessibilityRole="header">{title}</Text>
-      {body && <Text style={styles.muted}>{body}</Text>}
-      {action && (
-        <Pressable onPress={action.onPress} accessibilityRole="button" style={styles.button}>
-          <Text style={styles.buttonText}>{action.label}</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: 'white' },
-  banner: { padding: 10, backgroundColor: '#FFF4CE' },
-  search: { margin: 16, padding: 10, borderRadius: 10, backgroundColor: '#F2F2F7', fontSize: 16 },
-  footer: { minHeight: 64, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  message: { paddingTop: 80, paddingHorizontal: 32, alignItems: 'center', gap: 8 },
-  title: { fontSize: 18, fontWeight: '600', textAlign: 'center' },
-  muted: { color: '#666', textAlign: 'center' },
-  link: { color: '#0A84FF', fontWeight: '600' },
-  button: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#0A84FF' },
-  buttonText: { color: 'white', fontWeight: '600' },
-});
+// Message({ title, body?, action? }): centered View with accessibilityLiveRegion="polite", title with
+// accessibilityRole="header", optional muted body and a primary button (accessibilityRole="button").
+declare function Message(p: { title: string; body?: string; action?: { label: string; onPress: () => void } }): React.JSX.Element;
+// styles: screen, banner, search, footer (minHeight 64, centered row), muted, link — use theme tokens.
+declare const styles: Record<'screen' | 'banner' | 'search' | 'footer' | 'muted' | 'link', object>;
 ```
 
 Notes for adapting:

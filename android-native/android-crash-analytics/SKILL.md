@@ -415,13 +415,10 @@ This section is normative. Implementation in **A.2–A.5**.
 | C5 | Logout, log in again (same account) | **No** prompt; previous choice applied |
 | C6 | Log in with a second account / add account | **No** prompt; choice applies to account B |
 | C7 | Switch account / portal | No prompt; user id switched; `portal_id` updated |
-| C8 | Sign out of all accounts, log in | **No** prompt; consent record intact |
-| C9 | Per-account data wipe | Consent intact |
-| C10 | Change toggle in Settings (on → off) | Collection stops instantly; queued events deleted; optional server deletion requested |
-| C11 | Settings off → on | Collection resumes; no backfill of events from the off period |
+| C8 | Sign out of all accounts / per-account data wipe, log in | **No** prompt; consent record intact |
+| C10 | Settings toggle on → off / off → on | Off: stops instantly, queue deleted, optional server deletion. On: resumes, no backfill |
 | C12 | Policy version bump in new release | Prompt once after next login/foreground for signed-in user; not again |
-| C13 | Reinstall | Prompt again at first login (consent excluded from backup) |
-| C14 | Restore from backup to new device | Same as reinstall (or carried over, if you chose to include — documented) |
+| C13 | Reinstall / restore to new device | Prompt again at first login (consent excluded from backup; document if you chose to include) |
 | C15 | Process death while consent screen open | On relaunch, still undecided → screen shown again; nothing collected |
 | C16 | Crash before consent decided | Per legal basis: stored and sent/deleted after decision, or sent (legit interest) |
 | S1 | Release crash with R8 | Deobfuscated in Crashlytics, Sentry, Play |
@@ -487,7 +484,6 @@ sealed interface AnalyticsEvent {
 }
 
 enum class LoginMethod(val wire: String) { Password("password"), Google("google"), Passkey("passkey") }
-enum class PaywallSource(val wire: String) { Onboarding("onboarding"), Settings("settings"), Feature("feature_gate") }
 
 object Events {
     data class LoginCompleted(val method: LoginMethod, val isNewDevice: Boolean) : AnalyticsEvent {
@@ -502,20 +498,8 @@ object Events {
         override val name = "portal_switched"
         override fun params() = mapOf("portal_count" to portalCount.toLong())
     }
-    data class PaywallViewed(val source: PaywallSource, val placement: String) : AnalyticsEvent {
-        override val name = "paywall_viewed"
-        override fun params() = mapOf("source" to source.wire, "placement" to placement)
-    }
-    data class PurchaseCompleted(val productId: String, val priceMicros: Long, val currency: String) : AnalyticsEvent {
-        override val name = "purchase_completed"
-        override fun params() = mapOf("product_id" to productId, "price_micros" to priceMicros, "currency" to currency)
-    }
-    data class DeepLinkOpened(val linkType: String, val campaign: String?) : AnalyticsEvent {
-        override val name = "deep_link_opened"
-        override fun params() = buildMap<String, Any> {
-            put("link_type", linkType); campaign?.let { put("campaign", it) }
-        }
-    }
+    // PaywallViewed(source, placement), PurchaseCompleted(productId, priceMicros, currency),
+    // DeepLinkOpened(linkType, campaign?) follow the same shape: enum/primitive params only.
     data class ConsentUpdated(val analytics: Boolean, val crash: Boolean, val policyVersion: Int) : AnalyticsEvent {
         override val name = "consent_updated"
         override fun params() = mapOf("analytics" to analytics, "crash" to crash, "policy_version" to policyVersion.toLong())
@@ -591,19 +575,8 @@ fun ConsentRecord?.effective(): EffectiveConsent =
 ```kotlin
 package app.telemetry.consent
 
-import com.google.firebase.analytics.FirebaseAnalytics
-import com.google.firebase.analytics.FirebaseAnalytics.ConsentStatus.DENIED
-import com.google.firebase.analytics.FirebaseAnalytics.ConsentStatus.GRANTED
-import com.google.firebase.analytics.FirebaseAnalytics.ConsentType
-import com.google.firebase.crashlytics.FirebaseCrashlytics
-import com.google.firebase.perf.FirebasePerformance
-import io.sentry.Sentry
-import io.sentry.android.core.SentryAndroid
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.onEach
+// imports: FirebaseAnalytics (+ ConsentStatus.GRANTED/DENIED, ConsentType), FirebaseCrashlytics,
+// FirebasePerformance, io.sentry.Sentry, SentryAndroid, kotlinx.coroutines flow operators.
 
 class ConsentApplier(
     private val app: android.app.Application,
@@ -815,46 +788,18 @@ object PiiGuard {
     }
 }
 
-class FirebaseAnalyticsSink(private val fa: com.google.firebase.analytics.FirebaseAnalytics) : AnalyticsSink {
-    override fun send(e: QueuedEvent) = fa.logEvent(e.name, android.os.Bundle().apply {
-        e.params.forEach { (k, v) -> when (v) {
-            is String -> putString(k, v.take(100)); is Long -> putLong(k, v)
-            is Int -> putLong(k, v.toLong()); is Double -> putDouble(k, v)
-            is Boolean -> putLong(k, if (v) 1 else 0)
-        } }
-    })
-    override fun identify(userId: String?) = fa.setUserId(userId)
-    override fun setProperty(key: String, value: String?) = fa.setUserProperty(key, value)
-}
+// FirebaseAnalyticsSink: logEvent(name, Bundle) mapping String (take(100)) / Long / Double, Boolean -> 0/1;
+// identify -> setUserId, setProperty -> setUserProperty.
 ```
 
-Compose screen tracking:
-
-```kotlin
-@Composable
-fun TrackScreens(nav: NavController, analytics: Analytics) {
-    DisposableEffect(nav) {
-        val l = NavController.OnDestinationChangedListener { _, dest, _ ->
-            analytics.screen(dest.route ?: "unknown") // route pattern, e.g. "order/{id}"
-        }
-        nav.addOnDestinationChangedListener(l)
-        onDispose { nav.removeOnDestinationChangedListener(l) }
-    }
-}
-```
+Compose screen tracking: a `DisposableEffect(nav)` that adds an `OnDestinationChangedListener` calling `analytics.screen(dest.route ?: "unknown")` (route pattern, e.g. `order/{id}`), removed in `onDispose`.
 
 ### A.6 CrashReporter wrapper with breadcrumbs + exit reasons
 
 ```kotlin
 package app.telemetry
 
-import android.app.ActivityManager
-import android.app.ApplicationExitInfo
-import android.os.Build
-import com.google.firebase.crashlytics.FirebaseCrashlytics
-import io.sentry.Breadcrumb
-import io.sentry.Sentry
-import io.sentry.protocol.User
+// imports: ActivityManager, ApplicationExitInfo, Build, FirebaseCrashlytics
 
 interface CrashReporter {
     fun breadcrumb(category: String, message: String, data: Map<String, String> = emptyMap())
@@ -871,17 +816,8 @@ class CrashlyticsReporter(private val c: FirebaseCrashlytics) : CrashReporter {
     override fun recordNonFatal(t: Throwable, context: String) { c.setCustomKey("nf_context", context); c.recordException(t) }
 }
 
-class SentryReporter : CrashReporter {
-    override fun breadcrumb(category: String, message: String, data: Map<String, String>) =
-        Sentry.addBreadcrumb(Breadcrumb().apply { this.category = category; this.message = message
-            data.forEach { (k, v) -> setData(k, v) } })
-    override fun setKey(key: String, value: String) = Sentry.setTag(key, value)
-    override fun setUser(opaqueId: String?) = Sentry.setUser(opaqueId?.let { User().apply { id = it } })
-    override fun recordNonFatal(t: Throwable, context: String) {
-        Sentry.captureException(t) { scope -> scope.setTag("nf_context", context)
-            scope.setFingerprint(listOf("{{ default }}", context)) }
-    }
-}
+// SentryReporter: same interface -> Sentry.addBreadcrumb / setTag / setUser(User{id}) /
+// captureException with tag "nf_context" and fingerprint ["{{ default }}", context].
 
 /** Fan-out + rate limit. SDK collection itself is gated by ConsentApplier; calls are no-ops/ local when off. */
 class CompositeCrashReporter(private val delegates: List<CrashReporter>) : CrashReporter {
@@ -953,30 +889,16 @@ class AccountDataCleaner @Inject constructor(@ApplicationContext private val ctx
 
 ```kotlin
 class TelemetryIdentitySync @Inject constructor(
-    private val analytics: Analytics,
-    private val crash: CrashReporter,
-    private val queue: EventQueue,
+    private val analytics: Analytics, private val crash: CrashReporter, private val queue: EventQueue,
 ) {
     suspend fun onLogin(userId: String, portalId: String?, accountCount: Int) {
         analytics.identify(userId, buildMap { portalId?.let { put("portal_id", it) } })
         crash.setUser(userId); portalId?.let { crash.setKey("portal_id", it) }
         crash.setKey("account_count", accountCount.toString())
     }
-
-    // Called by SessionManager.switchAccount BEFORE tearing down A (see android-multi-account).
-    suspend fun onAccountSwitch(toUserId: String, toPortalId: String?, accountCount: Int) {
-        queue.flushNow()                       // A's events go out with A's identity (stamped anyway)
-        crash.breadcrumb("session", "account_switch")
-        onLogin(toUserId, toPortalId, accountCount)
-        analytics.track(Events.AccountSwitched(accountCount))
-    }
-
-    fun onPortalSwitch(portalId: String, portalCount: Int) {
-        analytics.setProperty("portal_id", portalId)
-        crash.setKey("portal_id", portalId); crash.breadcrumb("session", "portal_switch")
-        analytics.track(Events.PortalSwitched(portalCount))
-    }
-
+    // Called by SessionManager.switchAccount BEFORE tearing down A (see android-multi-account):
+    // queue.flushNow(); breadcrumb("session","account_switch"); onLogin(B...); track(AccountSwitched).
+    // onPortalSwitch: setProperty/setKey("portal_id"), breadcrumb, track(PortalSwitched).
     suspend fun onLastLogout() {
         queue.flushNow()
         analytics.reset(); crash.setUser(null); crash.setKey("portal_id", "")
@@ -1006,28 +928,8 @@ class App : Application() {
 ### A.10 Unit test: consent survives sign-out-all, no events before decision
 
 ```kotlin
-@Test fun consent_survives_signOutAll_and_second_login_skips_prompt() = runTest {
-    val ctx = ApplicationProvider.getApplicationContext<Context>()
-    val store = ConsentStore(ctx)
-    store.save(analytics = true, crash = true)
-    AccountDataCleaner(ctx).signOutAll()
-    assertFalse(store.needsPrompt())
-    assertEquals("home", PostLoginRouter(store).destinationAfterLogin())
-}
-
-@Test fun undecided_drops_events() {
-    val sink = FakeSink()
-    val a = ConsentGatedAnalytics(MutableStateFlow(null.effective()), setOf(sink), FakeIds(), { emptyMap() })
-    a.track(Events.LoginCompleted(LoginMethod.Password, isNewDevice = true))
-    assertTrue(sink.events.isEmpty())
-}
-
-@Test fun catalogue_names_valid() {
-    AnalyticsEvent::class.sealedSubclasses // or list instances explicitly
-    listOf(Events.LoginCompleted(LoginMethod.Google, false), Events.PaywallViewed(PaywallSource.Settings, "x"))
-        .forEach { e ->
-            assertTrue(e.name.matches(Regex("^[a-z][a-z0-9_]{0,39}$")))
-            assertTrue(e.params().size <= 24) // + schema_version
-        }
-}
+// 1. store.save(true, true); AccountDataCleaner(ctx).signOutAll(); assertFalse(store.needsPrompt());
+//    PostLoginRouter(store).destinationAfterLogin() == "home".
+// 2. ConsentGatedAnalytics with undecided consent + FakeSink: track(...) leaves sink.events empty.
+// 3. Every catalogue name matches ^[a-z][a-z0-9_]{0,39}$ and has <= 24 params.
 ```

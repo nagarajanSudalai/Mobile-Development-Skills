@@ -377,17 +377,12 @@ Simplified but complete enough to adapt. Names and endpoints are illustrative; l
 import 'dart:io';
 import 'package:dio/dio.dart';
 
-sealed class AppError implements Exception {
-  const AppError();
-}
+sealed class AppError implements Exception { const AppError(); }
 final class NetworkError extends AppError { const NetworkError(); }
 final class TimeoutError extends AppError { const TimeoutError(); }
 final class CancelledError extends AppError { const CancelledError(); }
 final class CertificateError extends AppError { const CertificateError(); }
-final class DecodingError extends AppError {
-  const DecodingError(this.endpoint, this.cause);
-  final String endpoint; final Object cause;
-}
+final class DecodingError extends AppError { const DecodingError(this.endpoint, this.cause); final String endpoint; final Object cause; }
 final class HttpError extends AppError {
   const HttpError(this.status, {this.code, this.message, this.retryAfter, this.fields = const {}});
   final int status; final String? code; final String? message;
@@ -398,13 +393,8 @@ final class HttpError extends AppError {
 }
 final class UnknownError extends AppError { const UnknownError(this.cause); final Object cause; }
 
-Duration? parseRetryAfter(String? v) {
-  if (v == null) return null;
-  final s = int.tryParse(v.trim());
-  if (s != null) return Duration(seconds: s);
-  try { final d = HttpDate.parse(v).difference(DateTime.now()); return d.isNegative ? Duration.zero : d; }
-  catch (_) { return null; }
-}
+/// Retry-After as delta-seconds (int.tryParse) or HTTP-date (HttpDate.parse, clamped ≥ 0); else null.
+Duration? parseRetryAfter(String? v) => throw UnimplementedError();
 
 AppError mapError(Object e) {
   if (e is AppError) return e;
@@ -412,9 +402,8 @@ AppError mapError(Object e) {
     if (e.error is AppError) return e.error! as AppError;
     switch (e.type) {
       case DioExceptionType.cancel: return const CancelledError();
-      case DioExceptionType.connectionTimeout:
-      case DioExceptionType.sendTimeout:
-      case DioExceptionType.receiveTimeout: return const TimeoutError();
+      case DioExceptionType.connectionTimeout || DioExceptionType.sendTimeout || DioExceptionType.receiveTimeout:
+        return const TimeoutError();
       case DioExceptionType.badCertificate: return const CertificateError();
       case DioExceptionType.connectionError: return const NetworkError();
       case DioExceptionType.badResponse:
@@ -444,29 +433,17 @@ import 'package:dio/dio.dart';
 import 'package:dio_cache_interceptor/dio_cache_interceptor.dart';
 import 'package:uuid/uuid.dart';
 
-class AppEnvironment {
-  const AppEnvironment({required this.apiBase, required this.appVersion});
-  final Uri apiBase; final String appVersion;
-}
+typedef AppEnvironment = ({Uri apiBase, String appVersion});
 
-abstract interface class TokenHolder {
-  String? get accessToken;
-  /// Single-flight: concurrent callers get the same future. Throws HttpError(401) on invalid_grant.
-  Future<String> refresh();
-}
+/// refresh() is single-flight: concurrent callers get the same future. Throws HttpError(401) on invalid_grant.
+abstract interface class TokenHolder { String? get accessToken; Future<String> refresh(); }
 
 class HeadersInterceptor extends Interceptor {
   HeadersInterceptor(this.env);
   final AppEnvironment env;
   @override
-  void onRequest(RequestOptions o, RequestInterceptorHandler h) {
-    o.headers.addAll({
-      'X-App-Version': env.appVersion,
-      'X-Request-Id': const Uuid().v4(),
-      'Accept': 'application/json',
-    });
-    h.next(o);
-  }
+  void onRequest(RequestOptions o, RequestInterceptorHandler h) => h.next(o
+    ..headers.addAll({'X-App-Version': env.appVersion, 'X-Request-Id': const Uuid().v4(), 'Accept': 'application/json'}));
 }
 
 class AuthInterceptor extends QueuedInterceptor {
@@ -476,8 +453,7 @@ class AuthInterceptor extends QueuedInterceptor {
 
   @override
   void onRequest(RequestOptions o, RequestInterceptorHandler h) {
-    final t = tokens.accessToken;
-    if (t != null && o.extra['noAuth'] != true) o.headers['Authorization'] = 'Bearer $t';
+    if (tokens.accessToken case final t? when o.extra['noAuth'] != true) o.headers['Authorization'] = 'Bearer $t';
     h.next(o);
   }
 
@@ -531,60 +507,30 @@ class RetryInterceptor extends Interceptor {
 
 class ApiClientFactory {
   static Dio create(AppEnvironment env, TokenHolder tokens, CacheStore cacheStore) {
-    final dio = Dio(BaseOptions(
-      baseUrl: env.apiBase.toString(),
-      connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(seconds: 30),
-    ));
-    final cacheOptions = CacheOptions(
-      store: cacheStore,                 // per account; wipe on sign-out
+    final dio = Dio(BaseOptions(baseUrl: env.apiBase.toString(),
+        connectTimeout: const Duration(seconds: 10), receiveTimeout: const Duration(seconds: 30)));
+    final cacheOptions = CacheOptions(store: cacheStore /* per account; wipe on sign-out */,
       policy: CachePolicy.request,       // conditional requests via ETag/Last-Modified
-      hitCacheOnNetworkFailure: true,    // v4 name — verify for your version
-      maxStale: const Duration(days: 7),
-    );
+      hitCacheOnNetworkFailure: true /* v4 name — verify for your version */, maxStale: const Duration(days: 7));
     dio.interceptors.addAll([
       HeadersInterceptor(env),
       AuthInterceptor(tokens, dio),
       RetryInterceptor(dio),
       DioCacheInterceptor(options: cacheOptions),
-      if (const bool.fromEnvironment('dart.vm.product') == false)
-        LogInterceptor(requestHeader: false, responseBody: false), // never log Authorization
+      // debug only: LogInterceptor(requestHeader: false, responseBody: false) — never log Authorization
     ]);
     return dio;
   }
 }
 
-/// Thin typed wrapper: the only place feature code talks HTTP.
-class Api {
-  Api(this._dio);
-  final Dio _dio;
-  final _inflight = <String, Future<Response<dynamic>>>{};
-
-  Future<T> get<T>(String path, T Function(Object? json) decode,
-      {Map<String, dynamic>? query, CancelToken? cancel}) async {
-    final key = Uri(path: path, queryParameters: query?.map((k, v) => MapEntry(k, '$v'))).toString();
-    // Dedupe identical in-flight GETs (don't pass per-caller cancel to the shared request).
-    final shared = _inflight[key] ??= _dio
-        .get<dynamic>(path, queryParameters: query)
-        .whenComplete(() => _inflight.remove(key));
-    try {
-      final res = await (cancel == null ? shared : _withCancel(shared, cancel));
-      try { return decode(res.data); } catch (e) { throw DecodingError(path, e); }
-    } catch (e) { throw mapError(e); }
-  }
-
-  Future<Response<dynamic>> send(String method, String path,
-      {Object? body, String? idempotencyKey, String? ifMatch}) async {
-    try {
-      return await _dio.request<dynamic>(path, data: body, options: Options(method: method, headers: {
-        if (idempotencyKey != null) 'Idempotency-Key': idempotencyKey,
-        if (ifMatch != null) 'If-Match': ifMatch,
-      }));
-    } catch (e) { throw mapError(e); }
-  }
-
-  static Future<R> _withCancel<R>(Future<R> f, CancelToken t) =>
-      Future.any([f, t.whenCancel.then<R>((_) => throw const CancelledError())]);
+/// Thin typed wrapper: the only place feature code talks HTTP. Both methods rethrow via mapError.
+/// - get<T>(path, decode, {query, cancel}): dedupes identical in-flight GETs in a Map<String, Future>
+///   (removed whenComplete; a per-caller CancelToken only abandons its own wait via Future.any);
+///   decode failures → DecodingError(path, e).
+/// - send(method, path, {body, idempotencyKey, ifMatch}): sets Idempotency-Key / If-Match headers.
+abstract interface class Api {
+  Future<T> get<T>(String path, T Function(Object? json) decode, {Map<String, dynamic>? query, CancelToken? cancel});
+  Future<Response<dynamic>> send(String method, String path, {Object? body, String? idempotencyKey, String? ifMatch});
 }
 ```
 
@@ -599,8 +545,7 @@ enum SyncState { synced, pending, failed, conflict }
 enum OutboxState { pending, inFlight, failed }
 
 class Todos extends Table {
-  TextColumn get id => text()();                       // client UUID
-  TextColumn get title => text()();
+  TextColumn get id => text()(); /* client UUID */ TextColumn get title => text()();
   BoolColumn get done => boolean().withDefault(const Constant(false))();
   IntColumn get version => integer().withDefault(const Constant(0))(); // server version
   DateTimeColumn get serverUpdatedAt => dateTime().nullable()();
@@ -612,16 +557,12 @@ class Todos extends Table {
 
 class Outbox extends Table {
   IntColumn get seq => integer().autoIncrement()();
-  TextColumn get entity => text()();
-  TextColumn get entityId => text()();
-  TextColumn get op => text()();                       // create | update | delete
-  TextColumn get payload => text()();                  // JSON
+  TextColumn get entity => text()(); TextColumn get entityId => text()();
+  TextColumn get op => text()(); /* create | update | delete */ TextColumn get payload => text()(); // JSON
   IntColumn get payloadVersion => integer().withDefault(const Constant(1))();
   TextColumn get idempotencyKey => text()();
-  IntColumn get attempts => integer().withDefault(const Constant(0))();
-  DateTimeColumn get nextAttemptAt => dateTime()();
-  IntColumn get state => intEnum<OutboxState>()();
-  TextColumn get lastError => text().nullable()();
+  IntColumn get attempts => integer().withDefault(const Constant(0))(); DateTimeColumn get nextAttemptAt => dateTime()();
+  IntColumn get state => intEnum<OutboxState>()(); TextColumn get lastError => text().nullable()();
 }
 
 class SyncMeta extends Table {
@@ -641,12 +582,9 @@ class AppDb extends _$AppDb {
   @override
   MigrationStrategy get migration => MigrationStrategy(
         onCreate: (m) => m.createAll(),
-        onUpgrade: (m, from, to) async {
-          if (from < 2) await m.addColumn(todos, todos.baseJson); // never drop outbox
-        },
+        onUpgrade: (m, from, to) async { if (from < 2) await m.addColumn(todos, todos.baseJson); }, // never drop outbox
         beforeOpen: (_) async {
-          await customStatement('PRAGMA journal_mode=WAL');
-          await customStatement('PRAGMA busy_timeout=5000');
+          await customStatement('PRAGMA journal_mode=WAL'); await customStatement('PRAGMA busy_timeout=5000');
           // Crash recovery: anything left inFlight is safe to resend (idempotency key).
           await (update(outbox)..where((o) => o.state.equalsValue(OutboxState.inFlight)))
               .write(const OutboxCompanion(state: Value(OutboxState.pending)));
@@ -673,7 +611,6 @@ class TodoRepository {
       .watch();
 
   Stream<int> watchPendingCount() => db.outbox.count().watchSingle();
-
   Future<void> refresh() => sync.syncNow(); // outbox first, then pull
 
   Future<void> create(String title) async {
@@ -704,14 +641,7 @@ class TodoRepository {
     sync.kick();
   }
 
-  Future<void> delete(String id) async {
-    await db.transaction(() async {
-      await (db.update(db.todos)..where((t) => t.id.equals(id)))
-          .write(TodosCompanion(deletedAt: Value(DateTime.now()), syncState: const Value(SyncState.pending)));
-      await _enqueue('todo', id, 'delete', const {});
-    });
-    sync.kick();
-  }
+  // delete(id): same transaction shape — set deletedAt + pending, _enqueue(..., 'delete', {}), kick().
 
   Future<void> _enqueue(String entity, String id, String op, Map<String, dynamic> payload) =>
       db.into(db.outbox).insert(OutboxCompanion.insert(
@@ -736,10 +666,8 @@ class SyncEngine {
   Timer? _kickTimer;
 
   /// Debounced trigger from writes, reconnect, resume, push, socket events.
-  void kick() {
-    _kickTimer?.cancel();
-    _kickTimer = Timer(const Duration(milliseconds: 300), () => unawaited(syncNow().catchError((_) {})));
-  }
+  void kick() { _kickTimer?.cancel();
+    _kickTimer = Timer(const Duration(milliseconds: 300), () => unawaited(syncNow().catchError((_) {}))); }
 
   /// Single-flight per account. (Cross-isolate exclusion: add a DB lease row — omitted.)
   Future<void> syncNow({Duration budget = const Duration(seconds: 25)}) =>
@@ -780,12 +708,9 @@ class SyncEngine {
           await _setState(e.seq, OutboxState.pending); // paused until re-auth; never dropped
           return false;
         } else {
-          await db.transaction(() async {
-            await (db.update(db.outbox)..where((o) => o.seq.equals(e.seq)))
-                .write(OutboxCompanion(state: const Value(OutboxState.failed), lastError: Value('$err')));
-            await (db.update(db.todos)..where((t) => t.id.equals(e.entityId)))
-                .write(const TodosCompanion(syncState: Value(SyncState.failed)));
-          });
+          // Permanent 4xx: in one transaction mark the outbox row `failed` (lastError) and the entity
+          // SyncState.failed so the UI offers edit / discard.
+          await _setState(e.seq, OutboxState.failed);
         }
       }
     }
@@ -803,10 +728,7 @@ class SyncEngine {
   }
 
   Future<void> _applyServerEcho(OutboxData e, Object? json) async {
-    if (e.op == 'delete') {
-      await (db.delete(db.todos)..where((t) => t.id.equals(e.entityId))).go();
-      return;
-    }
+    if (e.op == 'delete') return (db.delete(db.todos)..where((t) => t.id.equals(e.entityId))).go().then((_) {});
     final m = json as Map<String, dynamic>;
     final stillPending = await (db.select(db.outbox)
           ..where((o) => o.entityId.equals(e.entityId) & o.seq.isBiggerThanValue(e.seq)))
@@ -818,22 +740,14 @@ class SyncEngine {
         syncState: Value(stillPending.isEmpty ? SyncState.synced : SyncState.pending)));
   }
 
-  /// Policy: server-authoritative fields always from server; user fields → LWW here,
-  /// or mark `conflict` and let the UI prompt for document-like entities.
-  Future<void> _resolveConflict(OutboxData e, HttpError err) async {
-    await db.transaction(() async {
-      await (db.update(db.outbox)..where((o) => o.seq.equals(e.seq)))
-          .write(OutboxCompanion(state: const Value(OutboxState.failed), lastError: Value('conflict ${err.code}')));
-      await (db.update(db.todos)..where((t) => t.id.equals(e.entityId)))
-          .write(const TodosCompanion(syncState: Value(SyncState.conflict)));
-    });
-    kick(); // pull fetches the server copy; UI offers Keep mine (re-enqueue with new version) / Keep theirs
-  }
+  /// Policy: server-authoritative fields always from server; user fields → LWW, or (as here) mark the
+  /// outbox row failed + the entity `conflict`, then kick(): the pull fetches the server copy and the UI
+  /// offers Keep mine (re-enqueue with the new version) / Keep theirs.
+  Future<void> _resolveConflict(OutboxData e, HttpError err) async => throw UnimplementedError();
 
   // ---- Pull ----
   Future<void> _pull(String scope, DateTime deadline) async {
-    var meta = await (db.select(db.syncMeta)..where((m) => m.scope.equals(scope))).getSingleOrNull();
-    var cursor = meta?.cursor;
+    var cursor = (await (db.select(db.syncMeta)..where((m) => m.scope.equals(scope))).getSingleOrNull())?.cursor;
     while (DateTime.now().isBefore(deadline)) {
       final Map<String, dynamic> page;
       try {
@@ -843,9 +757,8 @@ class SyncEngine {
         if (e.status == 410) { await _fullResync(scope); return; }
         rethrow;
       }
-      final changes = (page['changes'] as List).cast<Map<String, dynamic>>();
-      final deletes = (page['deletes'] as List).cast<String>();
-      final next = page['next_cursor'] as String?;
+      final (changes, deletes, next) = ((page['changes'] as List).cast<Map<String, dynamic>>(),
+          (page['deletes'] as List).cast<String>(), page['next_cursor'] as String?);
       final pendingIds = (await db.select(db.outbox).get()).map((o) => o.entityId).toSet();
 
       await db.transaction(() async {
@@ -874,20 +787,15 @@ class SyncEngine {
   /// Mark-and-sweep without blanking the UI: bump `generation`, clear the cursor, re-pull
   /// (rows written get the new generation), then delete synced rows with an older generation.
   /// Needs a `generation` column on synced tables — omitted here for brevity.
-  Future<void> _fullResync(String scope) async {
-    await (db.update(db.syncMeta)..where((m) => m.scope.equals(scope)))
-        .write(const SyncMetaCompanion(cursor: Value(null)));
-    await _pull(scope, DateTime.now().add(const Duration(minutes: 2)));
-  }
+  Future<void> _fullResync(String scope) async => throw UnimplementedError();
 
   Future<void> _setState(int seq, OutboxState s) =>
       (db.update(db.outbox)..where((o) => o.seq.equals(seq))).write(OutboxCompanion(state: Value(s)));
 
   static final _rnd = Random();
-  static Duration _backoff(int attempt) {
-    final capMs = const Duration(hours: 1).inMilliseconds;
-    final ms = min(capMs, 5000 * pow(2, attempt - 1).toInt());
-    return Duration(milliseconds: ms ~/ 2 + _rnd.nextInt(ms ~/ 2 + 1)); // equal jitter
+  static Duration _backoff(int attempt) { // equal jitter, 5 s · 2^(n-1), cap 1 h
+    final ms = min(const Duration(hours: 1).inMilliseconds, 5000 * pow(2, attempt - 1).toInt());
+    return Duration(milliseconds: ms ~/ 2 + _rnd.nextInt(ms ~/ 2 + 1));
   }
 }
 ```
@@ -896,26 +804,12 @@ class SyncEngine {
 
 ```dart
 import 'dart:async';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:workmanager/workmanager.dart';
 
-class SyncTriggers {
-  SyncTriggers(this.engine);
-  final SyncEngine engine;
-  StreamSubscription<List<ConnectivityResult>>? _sub;
-  AppLifecycleListener? _life;
-
-  void start() {
-    _sub = Connectivity().onConnectivityChanged.listen((r) {
-      if (!r.contains(ConnectivityResult.none)) engine.kick(); // a hint: just try
-    });
-    _life = AppLifecycleListener(onResume: engine.kick);
-    engine.kick(); // app start
-  }
-
-  void dispose() { _sub?.cancel(); _life?.dispose(); }
-}
+// SyncTriggers(engine).start(): engine.kick() on app start, on AppLifecycleListener(onResume), and on
+// Connectivity().onConnectivityChanged results without ConnectivityResult.none (a hint: just try);
+// dispose() cancels the subscription and the listener.
 
 const kSyncTask = 'com.example.app.sync'; // also in iOS Info.plist BGTaskSchedulerPermittedIdentifiers
 
@@ -923,10 +817,8 @@ const kSyncTask = 'com.example.app.sync'; // also in iOS Info.plist BGTaskSchedu
 void callbackDispatcher() {
   Workmanager().executeTask((task, input) async {
     WidgetsFlutterBinding.ensureInitialized();
-    try {
-      // Build a minimal graph in this isolate: env, secure tokens, registry, per-account DB + client.
-      final accounts = await BackgroundGraph.signedInAccounts();
-      for (final a in accounts) {
+    try { // minimal graph in this isolate: env, secure tokens, registry, per-account DB + client
+      for (final a in await BackgroundGraph.signedInAccounts()) {
         final g = await BackgroundGraph.forAccount(a); // own Dio + AppDb(a.id), WAL enabled
         try { await g.sync.syncNow(budget: const Duration(seconds: 20)); }
         finally { await g.db.close(); }
@@ -940,8 +832,7 @@ void callbackDispatcher() {
 
 Future<void> registerBackgroundSync() async {
   await Workmanager().initialize(callbackDispatcher);
-  await Workmanager().registerPeriodicTask(
-    kSyncTask, kSyncTask,
+  await Workmanager().registerPeriodicTask(kSyncTask, kSyncTask,
     frequency: const Duration(hours: 1), // Android min 15 min; iOS decides on its own
     constraints: Constraints(networkType: NetworkType.connected, requiresBatteryNotLow: true),
     existingWorkPolicy: ExistingPeriodicWorkPolicy.keep, // name differs across versions — verify
@@ -949,58 +840,17 @@ Future<void> registerBackgroundSync() async {
   );
 }
 
-/// Placeholder for app-specific wiring used by the background isolate.
-abstract final class BackgroundGraph {
-  static Future<List<({String id})>> signedInAccounts() async => throw UnimplementedError();
-  static Future<({AppDb db, SyncEngine sync})> forAccount(({String id}) a) async => throw UnimplementedError();
-}
+// BackgroundGraph: app-specific wiring for the background isolate — signedInAccounts() and
+// forAccount(a) → ({AppDb db, SyncEngine sync}) built from storage, no UI singletons.
 ```
 
 ### A.7 Realtime with reconnect + catch-up
 
 ```dart
-import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
-import 'package:web_socket_channel/web_socket_channel.dart';
-
-class RealtimeClient {
-  RealtimeClient(this.ticketUri, this.engine);
-  final Future<Uri> Function() ticketUri; // fetches /ws?ticket=… via REST each time
-  final SyncEngine engine;
-  WebSocketChannel? _ch; Timer? _retry, _watchdog; var _attempt = 0; var _stopped = false;
-
-  Future<void> connect() async {
-    _stopped = false;
-    try {
-      final ch = WebSocketChannel.connect(await ticketUri());
-      await ch.ready;
-      _ch = ch; _attempt = 0;
-      engine.kick(); // catch-up via delta pull for anything missed while disconnected
-      _armWatchdog();
-      ch.stream.listen((raw) {
-        _armWatchdog();
-        final evt = jsonDecode(raw as String) as Map<String, dynamic>;
-        if (evt['type'] == 'changed') engine.kick(); // event is a hint; DB stays the truth
-      }, onDone: _scheduleReconnect, onError: (_) => _scheduleReconnect());
-    } catch (_) { _scheduleReconnect(); }
-  }
-
-  void _armWatchdog() {
-    _watchdog?.cancel();
-    _watchdog = Timer(const Duration(seconds: 45), () => _ch?.sink.close()); // half-open detection
-  }
-
-  void _scheduleReconnect() {
-    if (_stopped) return;
-    _retry?.cancel();
-    final ms = min(30000, 1000 * (1 << min(_attempt++, 5)));
-    _retry = Timer(Duration(milliseconds: Random().nextInt(ms) + 250), connect);
-  }
-
-  Future<void> stop() async { // on background / session dispose
-    _stopped = true; _retry?.cancel(); _watchdog?.cancel();
-    await _ch?.sink.close();
-  }
-}
+// RealtimeClient(ticketUri, engine) over web_socket_channel:
+// connect(): fetch a short-lived ticket URI via REST, WebSocketChannel.connect + await ch.ready, reset attempt,
+//   engine.kick() for catch-up (delta pull covers anything missed); each 'changed' event → engine.kick()
+//   (event is a hint; DB stays the truth). A 45 s watchdog re-armed on every message closes half-open sockets.
+// onDone/onError → reconnect after random(0, min(30 s, 1 s · 2^attempt)) + 250 ms unless stopped.
+// stop() on background / session dispose: cancel timers, close sink.
 ```

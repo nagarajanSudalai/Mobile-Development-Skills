@@ -409,10 +409,8 @@ sealed interface ListState<out T> {
 
 val <T> ListState<T>.items: List<T>
     get() = when (this) {
-        is ListState.Loaded -> items
-        is ListState.LoadingMore -> items
-        is ListState.Error -> items
-        is ListState.EndReached -> items
+        is ListState.Loaded -> items; is ListState.LoadingMore -> items
+        is ListState.Error -> items; is ListState.EndReached -> items
         else -> emptyList()
     }
 
@@ -483,27 +481,10 @@ fun LoadMoreEffect(listState: LazyListState, threshold: Int = 10, onLoadMore: ()
 ### A.2 Repository + ViewModel with Paging 3
 
 ```kotlin
-@Entity(tableName = "messages")
-data class MessageEntity(
-    @PrimaryKey val id: String,
-    val sender: String, val subject: String, val preview: String,
-    val avatarId: String?, val avatarUrl: String?, val sentAt: Long,
-    val sortKey: Long, val unread: Boolean, val pendingAction: String? = null,
-)
-
-@Entity(tableName = "remote_keys")
-data class RemoteKey(@PrimaryKey val listId: String, val nextCursor: String?, val updatedAt: Long)
-
-@Dao
-interface MessageDao {
-    @Query("SELECT * FROM messages WHERE pendingAction IS NULL OR pendingAction != 'deleted' ORDER BY sortKey DESC")
-    fun pagingSource(): PagingSource<Int, MessageEntity>
-    @Upsert suspend fun upsertAll(items: List<MessageEntity>)
-    @Query("DELETE FROM messages") suspend fun clear()
-    @Query("UPDATE messages SET pendingAction = :action WHERE id = :id")
-    suspend fun setPending(id: String, action: String?)
-    @Query("DELETE FROM messages WHERE id = :id") suspend fun delete(id: String)
-}
+// Room sketch: MessageEntity(@PrimaryKey id, sender, subject, preview, avatarId, avatarUrl, sentAt,
+//   sortKey, unread, pendingAction: String? = null); RemoteKey(@PrimaryKey listId, nextCursor, updatedAt).
+// MessageDao: pagingSource() filtering pendingAction != 'deleted' ORDER BY sortKey DESC; @Upsert upsertAll;
+//   clear(); setPending(id, action); delete(id). remoteKeyDao(): get(listId) / upsert(key).
 
 @OptIn(ExperimentalPagingApi::class)
 class InboxMediator(
@@ -610,30 +591,10 @@ sealed interface InboxEvent {
 ### A.3 Shimmer modifier, delayed loading & skeleton row
 
 ```kotlin
-fun Modifier.shimmer(enabled: Boolean = true): Modifier = composed {
-    val base = MaterialTheme.colorScheme.surfaceVariant
-    if (!enabled || rememberReducedMotion()) return@composed background(base)
-    val highlight = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
-    val transition = rememberInfiniteTransition(label = "shimmer")
-    val progress = transition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1_200, easing = LinearEasing)),
-        label = "shimmer-progress",
-    )
-    drawWithCache {
-        onDrawBehind {
-            val w = size.width
-            val x = -w + progress.value * 2 * w                  // read in draw phase only
-            drawRect(base)
-            drawRect(Brush.linearGradient(
-                colors = listOf(Color.Transparent, highlight, Color.Transparent),
-                start = Offset(x, 0f), end = Offset(x + w, size.height),
-            ))
-        }
-    }
-}
-// Note: `composed` is discouraged for hot paths; for a library-grade version implement
-// Modifier.Node (DrawModifierNode) — verify current guidance.
+// Modifier.shimmer(enabled): surfaceVariant base + animated linear-gradient highlight via
+// rememberInfiniteTransition, progress read only in drawWithCache/onDrawBehind (draw phase);
+// falls back to a static base when rememberReducedMotion() is true. Prefer Modifier.Node over
+// `composed` for a library-grade version — verify current guidance.
 
 @Composable
 fun rememberReducedMotion(): Boolean {
@@ -660,30 +621,9 @@ fun rememberDelayedLoading(loading: Boolean, delayMs: Long = 200, minShowMs: Lon
     return visible
 }
 
-@Composable
-fun MessageRowSkeleton() {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(48.dp).clip(CircleShape).shimmer())          // = avatar size
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Box(Modifier.fillMaxWidth(0.4f).height(14.dp).clip(RoundedCornerShape(4.dp)).shimmer())
-            Spacer(Modifier.height(8.dp))
-            Box(Modifier.fillMaxWidth(0.85f).height(12.dp).clip(RoundedCornerShape(4.dp)).shimmer())
-            Spacer(Modifier.height(6.dp))
-            Box(Modifier.fillMaxWidth(0.6f).height(12.dp).clip(RoundedCornerShape(4.dp)).shimmer())
-        }
-    }
-}
-
-@Composable
-fun InboxSkeleton(rows: Int = 8) {
-    Column(Modifier
-        .fillMaxSize()
-        .clearAndSetSemantics { contentDescription = "Loading inbox"; liveRegion = LiveRegionMode.Polite }) {
-        repeat(rows) { MessageRowSkeleton() }
-    }
-}
+// MessageRowSkeleton(): same geometry as the real row (48dp circle avatar + 3 text bars of
+// 40/85/60% width, rounded 4dp) using .shimmer(). InboxSkeleton(rows = 8): Column with
+// clearAndSetSemantics { contentDescription = "Loading inbox"; liveRegion = Polite }.
 ```
 
 ### A.4 Screen: LazyColumn + pull to refresh + swipe + footer
@@ -770,24 +710,9 @@ fun InboxScreen(vm: InboxViewModel = hiltViewModel(), onOpen: (String) -> Unit) 
     }
 }
 
-@Composable
-fun AppendFooter(state: LoadState, onRetry: () -> Unit) {
-    Box(Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(16.dp), contentAlignment = Alignment.Center) {
-        when (state) {
-            is LoadState.Loading -> CircularProgressIndicator(
-                Modifier.size(28.dp).semantics { contentDescription = "Loading more" }, strokeWidth = 3.dp)
-            is LoadState.Error -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Couldn't load more", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.width(12.dp))
-                OutlinedButton(onClick = onRetry) { Text("Retry") }
-            }
-            is LoadState.NotLoading -> if (state.endOfPaginationReached) {
-                Text("You're all caught up", style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
+// AppendFooter(state, onRetry): fixed min height (64dp) footer row.
+//   Loading -> small CircularProgressIndicator (contentDescription "Loading more")
+//   Error -> "Couldn't load more" + Retry button; NotLoading && endOfPaginationReached -> "You're all caught up"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -870,21 +795,9 @@ fun MessageRow(msg: MessageUi, onClick: () -> Unit, modifier: Modifier = Modifie
 ### A.5 Connectivity observer
 
 ```kotlin
-class ConnectivityObserver(context: Context) {
-    private val cm = context.getSystemService(ConnectivityManager::class.java)
-    val isOnline: Flow<Boolean> = callbackFlow {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
-                trySend(caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
-            }
-            override fun onLost(n: Network) { trySend(false) }
-        }
-        val current = cm.getNetworkCapabilities(cm.activeNetwork)
-        trySend(current?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true)
-        cm.registerDefaultNetworkCallback(callback)
-        awaitClose { cm.unregisterNetworkCallback(callback) }
-    }.distinctUntilChanged().conflate()
-}
+// Sketch: callbackFlow over ConnectivityManager.registerDefaultNetworkCallback; emit
+// NET_CAPABILITY_VALIDATED from onCapabilitiesChanged, false on onLost, seed with the current
+// activeNetwork; awaitClose { unregisterNetworkCallback }; .distinctUntilChanged().conflate().
 ```
 
 ### A.6 Coil 3 configuration & Compose prefetch
@@ -933,72 +846,10 @@ fun PrefetchThumbnails(listState: LazyListState, items: LazyPagingItems<MessageU
 ### A.7 RecyclerView equivalent (Views)
 
 ```kotlin
-class MessageAdapter(private val onClick: (String) -> Unit) :
-    PagingDataAdapter<MessageUi, MessageAdapter.VH>(DIFF) {
-
-    companion object {
-        val DIFF = object : DiffUtil.ItemCallback<MessageUi>() {
-            override fun areItemsTheSame(a: MessageUi, b: MessageUi) = a.id == b.id
-            override fun areContentsTheSame(a: MessageUi, b: MessageUi) = a == b
-            override fun getChangePayload(a: MessageUi, b: MessageUi) =
-                if (a.copy(unread = b.unread) == b) "unread" else null       // partial rebind
-        }
-    }
-
-    class VH(val b: ItemMessageBinding) : RecyclerView.ViewHolder(b.root)
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-        VH(ItemMessageBinding.inflate(LayoutInflater.from(parent.context), parent, false)).also { vh ->
-            vh.itemView.setOnClickListener {
-                val pos = vh.bindingAdapterPosition
-                if (pos != RecyclerView.NO_POSITION) getItem(pos)?.let { onClick(it.id) }
-            }
-        }
-
-    override fun onBindViewHolder(holder: VH, position: Int, payloads: MutableList<Any>) {
-        val m = getItem(position) ?: return
-        if ("unread" in payloads) { holder.b.sender.setTypeface(null, if (m.unread) BOLD else NORMAL); return }
-        onBindViewHolder(holder, position)
-    }
-
-    override fun onBindViewHolder(holder: VH, position: Int) {
-        val m = getItem(position) ?: return
-        with(holder.b) {
-            sender.text = m.sender; subject.text = m.subject; preview.text = m.preview; time.text = m.time
-            sender.setTypeface(null, if (m.unread) BOLD else NORMAL)
-            avatar.load(m.avatarUrl) { memoryCacheKey(m.avatarKey); diskCacheKey(m.avatarKey) }
-        }
-        ViewCompat.addAccessibilityAction(holder.itemView, "Archive") { _, _ -> /* vm.archive(m.id) */ true }
-    }
-
-    override fun onViewRecycled(holder: VH) { holder.b.avatar.dispose() }   // cancel in-flight load
-}
-
-// Fragment wiring
-recycler.setHasFixedSize(true)
-recycler.adapter = adapter.withLoadStateFooter(FooterLoadStateAdapter(adapter::retry))
-swipeRefresh.setOnRefreshListener { adapter.refresh() }
-viewLifecycleOwner.lifecycleScope.launch {
-    viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-        launch { vm.messages.collectLatest(adapter::submitData) }
-        launch {
-            adapter.loadStateFlow.collect { s ->
-                val empty = adapter.itemCount == 0
-                skeleton.isVisible = empty && s.refresh is LoadState.Loading
-                swipeRefresh.isRefreshing = !empty && s.refresh is LoadState.Loading
-                errorView.isVisible = empty && s.refresh is LoadState.Error
-                emptyView.isVisible = empty && s.refresh is LoadState.NotLoading && s.append.endOfPaginationReached
-            }
-        }
-    }
-}
-ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.LEFT) {
-    override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder) = false
-    override fun onSwiped(vh: RecyclerView.ViewHolder, dir: Int) {
-        val pos = vh.bindingAdapterPosition
-        val item = if (pos != RecyclerView.NO_POSITION) adapter.peek(pos) else null
-        if (item == null) { adapter.notifyItemChanged(pos); return }
-        vm.archive(item.id)                                  // Room update -> PagingSource invalidates
-    }
-}).attachToRecyclerView(recycler)
+// Sketch: PagingDataAdapter<MessageUi, VH>(DIFF) with DiffUtil keyed by id and a getChangePayload
+// for partial rebinds (e.g. unread); click via bindingAdapterPosition (guard NO_POSITION);
+// Coil load with stable memory/disk cache keys; dispose() in onViewRecycled; ViewCompat.addAccessibilityAction for Archive.
+// Fragment: setHasFixedSize, withLoadStateFooter(FooterLoadStateAdapter(adapter::retry)), SwipeRefreshLayout -> adapter.refresh(),
+// collect submitData + loadStateFlow inside repeatOnLifecycle(STARTED) to toggle skeleton/refresh/error/empty views;
+// ItemTouchHelper.SimpleCallback(0, LEFT).onSwiped -> adapter.peek(pos) -> vm.archive(id) (Room invalidates PagingSource).
 ```

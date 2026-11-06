@@ -408,20 +408,13 @@ export type ApiError =
   | { kind: 'decoding'; cause: unknown; requestId?: string }
   | { kind: 'unknown'; cause: unknown };
 
-export class ApiException extends Error {
-  constructor(public readonly error: ApiError) { super(error.kind); this.name = 'ApiException'; }
-}
+export class ApiException extends Error { constructor(public readonly error: ApiError) { super(error.kind); } }
 export const asApiError = (e: unknown): ApiError =>
   e instanceof ApiException ? e.error : { kind: 'unknown', cause: e };
 
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
-export function isRetryable(e: ApiError): boolean {
-  switch (e.kind) {
-    case 'offline': case 'timeout': return true;
-    case 'http': return RETRYABLE_STATUS.has(e.status);
-    default: return false;
-  }
-}
+export const isRetryable = (e: ApiError): boolean =>
+  e.kind === 'offline' || e.kind === 'timeout' || (e.kind === 'http' && RETRYABLE_STATUS.has(e.status));
 
 /** Full jitter; honours Retry-After when larger. */
 export function backoffDelay(attempt: number, e?: ApiError, rand = Math.random,
@@ -431,29 +424,11 @@ export function backoffDelay(attempt: number, e?: ApiError, rand = Math.random,
   return Math.min(Math.max(jittered, ra), 5 * 60_000);
 }
 
-export function parseRetryAfter(h: string | null): number | undefined {
-  if (!h) return undefined;
-  const s = Number(h);
-  if (!Number.isNaN(s)) return s * 1000;
-  const d = Date.parse(h);
-  return Number.isNaN(d) ? undefined : Math.max(0, d - Date.now());
-}
+/** Retry-After as delta-seconds or HTTP-date → ms (undefined if absent/unparseable). */
+export declare function parseRetryAfter(h: string | null): number | undefined;
 
-export function userMessage(e: ApiError): string | null {
-  switch (e.kind) {
-    case 'cancelled': return null;
-    case 'offline': return "You're offline. Changes will sync when you're back online.";
-    case 'timeout': return 'This is taking too long. Try again.';
-    case 'decoding': return 'Something went wrong. Try again.';
-    case 'http':
-      if (e.status === 429) return 'Too many requests. Please wait a moment.';
-      if (e.status === 403) return "You don't have access to this.";
-      if (e.status === 404) return 'This item no longer exists.';
-      if (e.status >= 500) return 'Our servers are having trouble. Try again.';
-      return e.message ?? 'Something went wrong.';
-    default: return 'Something went wrong.';
-  }
-}
+// userMessage(e): map kind/status → copy; 'cancelled' → null (no toast), offline → "changes will sync",
+// 429/403/404/5xx → specific strings, else server message or generic.
 ```
 
 ### A.2 Configured client: timeout, auth, single-flight refresh, retries, circuit breaker
@@ -462,39 +437,22 @@ export function userMessage(e: ApiError): string | null {
 // net/client.ts
 import { ApiError, ApiException, backoffDelay, isRetryable, parseRetryAfter } from './errors';
 
-export interface TokenProvider {
-  getAccessToken(): Promise<string | null>;
-  refresh(): Promise<string>;              // throws ApiException(http 401) on invalid_grant
-  onSessionExpired(): void;
+export interface TokenProvider {          // refresh() throws ApiException(http 401) on invalid_grant
+  getAccessToken(): Promise<string | null>; refresh(): Promise<string>; onSessionExpired(): void;
 }
 export interface RequestOptions<T> {
-  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  body?: unknown;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; body?: unknown; headers?: Record<string, string>;
+  signal?: AbortSignal; timeoutMs?: number; retries?: number; auth?: boolean;
   idempotencyKey?: string;                 // required for retrying POST/PATCH
-  timeoutMs?: number;
-  retries?: number;
-  auth?: boolean;
   decode?: (json: unknown) => T;           // zod: Schema.parse
 }
 
-const uuid = () => globalThis.crypto?.randomUUID?.() ??     // expo-crypto randomUUID as fallback
-  'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0; return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
-const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((res, rej) => {
-  const t = setTimeout(res, ms);
-  signal?.addEventListener('abort', () => { clearTimeout(t); rej(new ApiException({ kind: 'cancelled' })); });
-});
+declare const uuid: () => string;          // crypto.randomUUID ?? expo-crypto randomUUID
+declare function sleep(ms: number, signal?: AbortSignal): Promise<void>;  // rejects 'cancelled' on abort
 
-class CircuitBreaker {
-  private failures = 0; private openUntil = 0;
-  constructor(private threshold = 5, private coolDownMs = 30_000) {}
-  canRequest() { return Date.now() >= this.openUntil; }
-  success() { this.failures = 0; }
-  failure() { if (++this.failures >= this.threshold) { this.openUntil = Date.now() + this.coolDownMs; this.failures = this.threshold - 1; } }
-}
+// CircuitBreaker: after 5 consecutive timeouts/5xx, canRequest() is false for 30 s; then one probe
+// (a further failure re-opens immediately); success() resets the count.
+declare class CircuitBreaker { canRequest(): boolean; success(): void; failure(): void; }
 
 export class ApiClient {
   private refreshing: Promise<string> | null = null;
@@ -509,9 +467,7 @@ export class ApiClient {
     for (let attempt = 0; ; attempt++) {
       try {
         if (!this.breaker.canRequest()) throw new ApiException({ kind: 'http', status: 503, code: 'CIRCUIT_OPEN' });
-        const res = await this.send(path, method, o, false);
-        this.breaker.success();
-        return res as T;
+        const res = await this.send(path, method, o, false); this.breaker.success(); return res as T;
       } catch (e) {
         const err = e instanceof ApiException ? e.error : ({ kind: 'unknown', cause: e } as ApiError);
         if (err.kind === 'timeout' || (err.kind === 'http' && err.status >= 500)) this.breaker.failure();
@@ -522,18 +478,11 @@ export class ApiClient {
   }
 
   private async send<T>(path: string, method: string, o: RequestOptions<T>, isReplay: boolean): Promise<T> {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'X-Request-Id': uuid(),
-      'X-App-Version': this.cfg.appVersion,
-      'X-Client-Id': this.cfg.clientId,
-      ...o.headers,
-    };
+    const headers: Record<string, string> = { Accept: 'application/json', 'X-Request-Id': uuid(),
+      'X-App-Version': this.cfg.appVersion, 'X-Client-Id': this.cfg.clientId, ...o.headers };
     if (o.body !== undefined) headers['Content-Type'] = 'application/json';
-    if (o.auth !== false) {
-      const token = await this.cfg.tokens.getAccessToken();
-      if (token) headers.Authorization = `Bearer ${token}`;
-    }
+    const token = o.auth !== false ? await this.cfg.tokens.getAccessToken() : null;
+    if (token) headers.Authorization = `Bearer ${token}`;
     if (o.idempotencyKey) headers['Idempotency-Key'] = o.idempotencyKey;
 
     // Compose caller signal + timeout (AbortSignal.any may be unavailable on Hermes).
@@ -545,19 +494,14 @@ export class ApiClient {
 
     let res: Response;
     try {
-      res = await fetch(this.cfg.baseUrl + path, {
-        method, headers, signal: ctrl.signal,
-        body: o.body === undefined ? undefined : JSON.stringify(o.body),
-      });
+      res = await fetch(this.cfg.baseUrl + path, { method, headers, signal: ctrl.signal,
+        body: o.body === undefined ? undefined : JSON.stringify(o.body) });
     } catch (cause) {
       if (o.signal?.aborted) throw new ApiException({ kind: 'cancelled' });
       if (timedOut) throw new ApiException({ kind: 'timeout' });
       // Transport failure: no route, DNS, TLS, reset. NetInfo is only used for UI, never to gate.
       throw new ApiException({ kind: 'offline', cause });
-    } finally {
-      clearTimeout(timer);
-      o.signal?.removeEventListener('abort', onAbort);
-    }
+    } finally { clearTimeout(timer); o.signal?.removeEventListener('abort', onAbort); }
 
     const requestId = res.headers.get('X-Request-Id') ?? headers['X-Request-Id'];
     if (res.status === 401 && o.auth !== false && !isReplay) {
@@ -570,8 +514,7 @@ export class ApiClient {
     const text = await res.text();
     let json: unknown = undefined;
     try { json = text ? JSON.parse(text) : undefined; }
-    catch (cause) {
-      // Captive portals return HTML 200.
+    catch (cause) {                                       // captive portals return HTML 200
       throw new ApiException(res.ok ? { kind: 'decoding', cause, requestId } : { kind: 'http', status: res.status, requestId });
     }
     if (!res.ok) {
@@ -585,8 +528,7 @@ export class ApiClient {
 
   /** N concurrent 401s share one refresh. */
   private refreshOnce(): Promise<string> {
-    this.refreshing ??= this.cfg.tokens.refresh().finally(() => { this.refreshing = null; });
-    return this.refreshing;
+    return (this.refreshing ??= this.cfg.tokens.refresh().finally(() => { this.refreshing = null; }));
   }
 }
 ```
@@ -598,57 +540,32 @@ export class ApiClient {
 import { AppState, Platform } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { QueryClient, focusManager, onlineManager } from '@tanstack/react-query';
-import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
-import { createSyncStoragePersister } from '@tanstack/query-sync-storage-persister';
-import { createMMKV } from 'react-native-mmkv';  // v4; v3: new MMKV({ id })
 import { asApiError, backoffDelay, isRetryable } from './errors';
 
 onlineManager.setEventListener(setOnline =>
   NetInfo.addEventListener(s => setOnline(s.isConnected !== false && s.isInternetReachable !== false)));
 
-AppState.addEventListener('change', s => {
-  if (Platform.OS !== 'web') focusManager.setFocused(s === 'active');
-});
+AppState.addEventListener('change', s => { if (Platform.OS !== 'web') focusManager.setFocused(s === 'active'); });
 
 export function makeQueryClient(api: import('./client').ApiClient) {
   const qc = new QueryClient({
     defaultOptions: {
-      queries: {
-        staleTime: 30_000,
-        gcTime: 24 * 60 * 60_000,                       // ≥ persister maxAge
-        retry: (n, e) => n < 3 && isRetryable(asApiError(e)),
-        retryDelay: (n, e) => backoffDelay(n, asApiError(e)),
-        networkMode: 'offlineFirst',
-      },
-      mutations: { networkMode: 'offlineFirst', retry: (n, e) => n < 3 && isRetryable(asApiError(e)) },
+      queries: { staleTime: 30_000, gcTime: 24 * 60 * 60_000 /* ≥ persister maxAge */, networkMode: 'offlineFirst',
+        retry: (n, e) => n < 3 && isRetryable(asApiError(e)), retryDelay: (n, e) => backoffDelay(n, asApiError(e)) },
+      mutations: { networkMode: 'offlineFirst' },
     },
   });
-  // Must be registered BEFORE restore so persisted paused mutations have a mutationFn.
-  qc.setMutationDefaults(['like'], {
+  // Must be registered BEFORE restore so persisted paused mutations have a mutationFn; scope serializes.
+  qc.setMutationDefaults(['like'], { scope: { id: 'likes' },
     mutationFn: ({ postId, liked, commandId }: { postId: string; liked: boolean; commandId: string }) =>
-      api.request(`/posts/${postId}/like`, { method: liked ? 'PUT' : 'DELETE', idempotencyKey: commandId }),
-    scope: { id: 'likes' },                             // serialize in order
-  });
+      api.request(`/posts/${postId}/like`, { method: liked ? 'PUT' : 'DELETE', idempotencyKey: commandId }) });
   return qc;
 }
 
-const mmkv = createMMKV({ id: 'query-cache' /* , encryptionKey */ });
-export const persister = createSyncStoragePersister({
-  storage: { getItem: k => mmkv.getString(k) ?? null, setItem: (k, v) => mmkv.set(k, v), removeItem: k => mmkv.remove(k) },
-  key: 'rq.v1',                                         // per account in multi-account apps
-});
-
-export function QueryProvider({ client, children }: { client: QueryClient; children: React.ReactNode }) {
-  return (
-    <PersistQueryClientProvider
-      client={client}
-      persistOptions={{ persister, maxAge: 24 * 60 * 60_000, buster: '2026-11-schema-3',
-        dehydrateOptions: { shouldDehydrateQuery: q => q.state.status === 'success' && q.meta?.persist !== false } }}
-      onSuccess={() => client.resumePausedMutations().then(() => client.invalidateQueries())}>
-      {children}
-    </PersistQueryClientProvider>
-  );
-}
+// Persistence: createSyncStoragePersister over an MMKV instance (key per account), then
+// <PersistQueryClientProvider persistOptions={{ persister, maxAge: 24h, buster: '<schema-version>',
+//   dehydrateOptions: { shouldDehydrateQuery: q => q.state.status === 'success' } }}
+//   onSuccess={() => client.resumePausedMutations().then(() => client.invalidateQueries())}>
 ```
 
 ### A.4 Local DB schema and repository (network → DB → UI)
@@ -657,12 +574,7 @@ export function QueryProvider({ client, children }: { client: QueryClient; child
 // data/db.ts
 import * as SQLite from 'expo-sqlite';
 
-export async function openDb(name = 'app.db') {
-  const db = await SQLite.openDatabaseAsync(name, { enableChangeListener: true });
-  await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  await migrate(db);
-  return db;
-}
+// openDb(name): SQLite.openDatabaseAsync(name, { enableChangeListener: true }), PRAGMA WAL + foreign_keys, migrate(db).
 
 const MIGRATIONS: string[] = [
   `CREATE TABLE notes (id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
@@ -676,21 +588,10 @@ const MIGRATIONS: string[] = [
   // v2: ALTER TABLE ... — never drop outbox
 ];
 
-async function migrate(db: SQLite.SQLiteDatabase) {
-  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
-  for (let v = row?.user_version ?? 0; v < MIGRATIONS.length; v++) {
-    await db.withExclusiveTransactionAsync(async tx => {
-      await tx.execAsync(MIGRATIONS[v]);
-      await tx.execAsync(`PRAGMA user_version = ${v + 1}`);
-    });
-  }
-}
-```
+// migrate(db): read PRAGMA user_version; for each later MIGRATIONS[v], run it and set
+// user_version = v + 1 inside one withExclusiveTransactionAsync.
 
-```ts
 // data/notesRepository.ts
-import { useEffect, useState } from 'react';
-import * as SQLite from 'expo-sqlite';
 import { randomUUID } from 'expo-crypto';
 
 export type Note = { id: string; title: string; body: string; server_version: number | null;
@@ -721,9 +622,7 @@ export class NotesRepository {
         patch.title ?? cur.title, patch.body ?? cur.body, Date.now(), id));
   }
 
-  async remove(id: string) {
-    await this.write(id, 'delete', {}, null, async tx => tx.runAsync('UPDATE notes SET deleted=1 WHERE id=?', id));
-  }
+  // remove(id): write(id, 'delete', {}, null, tx => soft-delete row: deleted=1)
 
   /** Row change + outbox enqueue (with coalescing) in ONE transaction. */
   private async write(entityId: string, op: 'create' | 'update' | 'delete', payload: object,
@@ -752,20 +651,8 @@ export class NotesRepository {
   }
 }
 
-/** UI observes the DB, not the network. */
-export function useNotes(repo: NotesRepository, db: SQLite.SQLiteDatabase) {
-  const [notes, setNotes] = useState<Note[]>([]);
-  useEffect(() => {
-    let alive = true;
-    const load = () => repo.list().then(n => alive && setNotes(n));
-    load();
-    const sub = SQLite.addDatabaseChangeListener(e => {
-      if (e.tableName === 'notes' || e.tableName === 'outbox') load();
-    });
-    return () => { alive = false; sub.remove(); };
-  }, [repo, db]);
-  return notes;
-}
+// useNotes(repo): UI observes the DB, not the network — load repo.list() on mount and on
+// SQLite.addDatabaseChangeListener events for 'notes'/'outbox'; remove the subscription on unmount.
 ```
 
 ### A.5 Outbox processor
@@ -793,8 +680,7 @@ export class OutboxProcessor {
   pause(p: boolean) { this.paused = p; }
 
   drain(): Promise<void> {                      // single-flight
-    this.running ??= this.loop().finally(() => { this.running = null; });
-    return this.running;
+    return (this.running ??= this.loop().finally(() => { this.running = null; }));
   }
 
   private async loop() {
@@ -820,9 +706,8 @@ export class OutboxProcessor {
           await this.setStatus(next, 'conflict', err); blocked.add(next.entity_id);
           await this.onConflict(next, err.details); continue;
         }
-        if (err.kind === 'http' && err.status === 404 && next.op !== 'create') {
-          await this.db.runAsync(`DELETE FROM outbox WHERE id=?`, next.id);   // remotely deleted
-          continue;
+        if (err.kind === 'http' && err.status === 404 && next.op !== 'create') {   // remotely deleted
+          await this.db.runAsync(`DELETE FROM outbox WHERE id=?`, next.id); continue;
         }
         if (isRetryable(err)) {
           const attempts = next.attempts + 1;
@@ -877,12 +762,10 @@ export class SyncEngine {
 
   /** Debounced, single-flight. Triggers: start, foreground, reconnect, push, bg task, socket. */
   sync(opts: { budgetMs?: number; signal?: AbortSignal } = {}): Promise<void> {
-    const now = Date.now();
     if (this.running) return this.running;
-    if (now - this.lastTrigger < 1500) return Promise.resolve();
-    this.lastTrigger = now;
-    this.running = this.run(opts).finally(() => { this.running = null; });
-    return this.running;
+    if (Date.now() - this.lastTrigger < 1500) return Promise.resolve();
+    this.lastTrigger = Date.now();
+    return (this.running = this.run(opts).finally(() => { this.running = null; }));
   }
 
   private async run({ budgetMs = 60_000, signal }: { budgetMs?: number; signal?: AbortSignal }) {
@@ -938,13 +821,9 @@ export class SyncEngine {
     });
   }
 
-  private getState(k: string) {
-    return this.db.getFirstAsync<{ value: string }>(`SELECT value FROM sync_state WHERE key=?`, k)
-      .then(r => r?.value ?? null);
-  }
-  private setState(k: string, v: string) {
-    return this.db.runAsync(`INSERT OR REPLACE INTO sync_state (key,value) VALUES (?,?)`, k, v);
-  }
+  // getState/setState: SELECT / INSERT OR REPLACE on sync_state(key, value)
+  private declare getState: (k: string) => Promise<string | null>;
+  private declare setState: (k: string, v: string) => Promise<unknown>;
 }
 ```
 
@@ -952,8 +831,6 @@ export class SyncEngine {
 
 ```ts
 // sync/triggers.ts  — import from the app entry (index.ts / app/_layout.tsx top level)
-import { AppState } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
 import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import { buildHeadlessSession } from './session';  // registry → tokens → db → api → engine, no React
@@ -975,51 +852,16 @@ TaskManager.defineTask(SYNC_TASK, async () => {
 });
 
 export async function registerBackgroundSync() {
-  const status = await BackgroundTask.getStatusAsync();
-  if (status !== BackgroundTask.BackgroundTaskStatus.Available) return;   // e.g. Low Power / restricted
+  if ((await BackgroundTask.getStatusAsync()) !== BackgroundTask.BackgroundTaskStatus.Available) return;  // restricted
   if (!(await TaskManager.isTaskRegisteredAsync(SYNC_TASK)))
     await BackgroundTask.registerTaskAsync(SYNC_TASK, { minimumInterval: 15 });  // minutes
 }
 
-/** Foreground triggers; returns an unsubscribe for the active session's lifetime. */
-export function attachForegroundTriggers(engine: { sync(): Promise<void> }) {
-  let wasOffline = false;
-  let t: ReturnType<typeof setTimeout> | undefined;
-  const debounced = () => { clearTimeout(t); t = setTimeout(() => engine.sync().catch(() => {}), 1000); };
-  const net = NetInfo.addEventListener(s => {
-    const offline = s.isConnected === false || s.isInternetReachable === false;
-    if (wasOffline && !offline) debounced();                     // reconnect
-    wasOffline = offline;
-  });
-  const app = AppState.addEventListener('change', st => { if (st === 'active') debounced(); });
-  debounced();                                                   // app start
-  return () => { net(); app.remove(); clearTimeout(t); };
-}
+// attachForegroundTriggers(engine): 1 s-debounced engine.sync() on app start, on AppState 'active',
+// and on NetInfo offline → online transitions; returns an unsubscribe for the active session's lifetime.
 
-/** Data push { type: 'sync', accountId } — see react-native-push-notifications for handler setup. */
-export async function onSyncPush(data: { type?: string; accountId?: string }) {
-  if (data.type !== 'sync' || !data.accountId) return;
-  const s = await buildHeadlessSession.forAccount(data.accountId);
-  await s?.engine.sync({ budgetMs: 20_000 });
-}
+// onSyncPush(data): for a data push { type: 'sync', accountId }, build that account's headless session
+// and run engine.sync({ budgetMs: 20_000 }) — see react-native-push-notifications for handler setup.
 ```
 
-Bare RN alternative with **react-native-background-fetch**:
-
-```ts
-import BackgroundFetch from 'react-native-background-fetch';
-
-export async function configureBackgroundFetch(run: () => Promise<void>) {
-  await BackgroundFetch.configure(
-    { minimumFetchInterval: 15, stopOnTerminate: false, startOnBoot: true, enableHeadless: true,
-      requiredNetworkType: BackgroundFetch.NETWORK_TYPE_ANY },
-    async taskId => { try { await run(); } finally { BackgroundFetch.finish(taskId); } },
-    taskId => BackgroundFetch.finish(taskId),                    // OS timeout
-  );
-}
-// index.js (Android headless):
-// BackgroundFetch.registerHeadlessTask(async ({ taskId, timeout }) => {
-//   if (timeout) return BackgroundFetch.finish(taskId);
-//   await runHeadlessSync(); BackgroundFetch.finish(taskId);
-// });
-```
+Bare RN alternative: **react-native-background-fetch** — `BackgroundFetch.configure({ minimumFetchInterval: 15, stopOnTerminate: false, startOnBoot: true, enableHeadless: true }, onEvent, onTimeout)`; always call `BackgroundFetch.finish(taskId)` in both callbacks, and register the Android headless task in `index.js` (verify options against the current version).

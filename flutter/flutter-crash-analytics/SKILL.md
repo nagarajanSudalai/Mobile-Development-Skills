@@ -337,21 +337,11 @@ Simplified; names are illustrative. Verify package APIs against your versions.
 ```
 
 ```bash
-# CI (per platform/flavor). Symbols must come from THIS build.
-flutter build appbundle --release --flavor prod \
-  --obfuscate --split-debug-info=build/symbols/android \
-  --dart-define=APP_ENV=production
+# CI (per platform/flavor). Symbols must come from THIS build; full flags in section 3.
+flutter build appbundle --release --flavor prod --obfuscate --split-debug-info=build/symbols/android
 firebase crashlytics:symbols:upload --app="$FIREBASE_ANDROID_APP_ID" build/symbols/android
-# android/app/build.gradle(.kts): firebaseCrashlytics { mappingFileUploadEnabled = true; nativeSymbolUploadEnabled = true }
-# ./gradlew uploadCrashlyticsSymbolFileProdRelease   (NDK symbols)
-
-flutter build ipa --release --flavor prod --obfuscate --split-debug-info=build/symbols/ios \
-  --extra-gen-snapshot-options=--save-obfuscation-map=build/app/obfuscation.map.json
-firebase crashlytics:symbols:upload --app="$FIREBASE_IOS_APP_ID" build/symbols/ios
-# dSYMs: Crashlytics run script added by `flutterfire configure` uploads on archive.
-
-# Sentry alternative: pubspec.yaml -> sentry: { upload_debug_symbols: true, project: app, org: acme }
-SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN dart run sentry_dart_plugin
+# iOS: same with `flutter build ipa` + build/symbols/ios; dSYMs via the flutterfire run script.
+# Sentry alternative: pubspec `sentry: { upload_debug_symbols: true }` + `dart run sentry_dart_plugin`.
 ```
 
 ### A.1 Typed event catalogue
@@ -371,22 +361,7 @@ final class ScreenViewed extends AnalyticsEvent {
   @override Map<String, Object> get params => {'screen_name': screenName};
 }
 
-final class SignupCompleted extends AnalyticsEvent {
-  const SignupCompleted({required this.method});
-  final SignupMethod method;
-  @override String get name => 'signup_completed';
-  @override Map<String, Object> get params => {'method': method.wire};
-}
-
-enum SignupMethod { email('email'), apple('apple'), google('google');
-  const SignupMethod(this.wire); final String wire; }
-
-final class PurchaseCompleted extends AnalyticsEvent {
-  const PurchaseCompleted({required this.productId, required this.placement});
-  final String productId, placement;
-  @override String get name => 'purchase_completed';
-  @override Map<String, Object> get params => {'product_id': productId, 'placement': placement};
-}
+// SignupCompleted({method: SignupMethod enum}), PurchaseCompleted({productId, placement}): same shape.
 
 final class AccountSwitched extends AnalyticsEvent {
   const AccountSwitched({required this.accountCount});
@@ -686,14 +661,10 @@ class CompositeCrashReporter implements CrashReporter {
   Future<void> recordError(Object e, StackTrace? st, {String? reason, bool fatal = false}) async {
     for (final r in _all) { await r.recordError(e, st, reason: reason, fatal: fatal); }
   }
-  @override
-  Future<void> recordFlutterError(FlutterErrorDetails d, {bool fatal = true}) async {
-    for (final r in _all) { await r.recordFlutterError(d, fatal: fatal); }
-  }
-  @override
-  void breadcrumb(String m, {String category = 'app', Map<String, Object?>? data}) {
-    for (final r in _all) { r.breadcrumb(m, category: category, data: data); }
-  }
+  @override Future<void> recordFlutterError(FlutterErrorDetails d, {bool fatal = true}) async {
+    for (final r in _all) { await r.recordFlutterError(d, fatal: fatal); } }
+  @override void breadcrumb(String m, {String category = 'app', Map<String, Object?>? data}) {
+    for (final r in _all) { r.breadcrumb(m, category: category, data: data); } }
   @override Future<void> setUser(String? id) async { for (final r in _all) { await r.setUser(id); } }
   @override Future<void> setKey(String k, Object v) async { for (final r in _all) { await r.setKey(k, v); } }
   @override Future<void> applyConsent(bool on) async { for (final r in _all) { await r.applyConsent(on); } }
@@ -815,42 +786,10 @@ Future<void> onSettingsChanged(ConsentStore store, Analytics a,
 ### A.7 Tests (sketch)
 
 ```dart
-void main() {
-  setUp(() => SharedPreferencesAsyncPlatform.instance = InMemorySharedPreferencesAsync.empty());
-
-  test('no events before consent, then events after yes', () async {
-    final store = ConsentStore(SharedPreferencesAsync());
-    await store.load();
-    final sink = RecordingAnalytics();
-    final a = GatedAnalytics([sink], store, () => {});
-    a.track(const ScreenViewed('login'));
-    expect(sink.events, isEmpty);
-    await store.save(analytics: true, crash: true);
-    a.track(const ScreenViewed('home'));
-    expect(sink.events.single, isA<ScreenViewed>());
-  });
-
-  test('sign-out wipe keeps device consent', () async {
-    final prefs = SharedPreferencesAsync();
-    final store = ConsentStore(prefs);
-    await store.save(analytics: false, crash: true);
-    await prefs.setString('acct.A.lastTab', 'x');
-    await wipeAccountPrefs(prefs, 'A');
-    final reloaded = ConsentStore(prefs);
-    await reloaded.load();
-    expect(reloaded.needsPrompt, isFalse);
-    expect(await prefs.getString('acct.A.lastTab'), isNull);
-  });
-
-  test('policy bump re-prompts once', () async {
-    final prefs = SharedPreferencesAsync();
-    await prefs.setString('device.consent',
-        '{"version":1,"analytics":true,"crash":true,"decidedAt":"2026-01-01T00:00:00Z"}');
-    final store = ConsentStore(prefs);
-    await store.load();
-    expect(store.needsPrompt, isTrue);
-    await store.save(analytics: true, crash: true);
-    expect(store.needsPrompt, isFalse);
-  });
-}
+// setUp: SharedPreferencesAsyncPlatform.instance = InMemorySharedPreferencesAsync.empty();
+// 1. No events before consent: GatedAnalytics([RecordingAnalytics()], store, ...) drops track() until
+//    store.save(analytics: true, ...); afterwards exactly one ScreenViewed is recorded.
+// 2. Sign-out wipe keeps device consent: save consent, wipeAccountPrefs(prefs, 'A'), reload a new
+//    ConsentStore -> needsPrompt is false, while 'acct.A.*' keys are gone.
+// 3. Policy bump re-prompts once: stored version 1 -> needsPrompt true; after save -> false.
 ```
