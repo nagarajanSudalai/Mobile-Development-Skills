@@ -433,11 +433,10 @@ fun alertContent(r: SubmitResult): AlertContent? = when (r) {
     SubmitResult.Success -> null
     is SubmitResult.FieldErrors -> AlertContent("Check your details", r.errors.values.joinToString("\n") { "• $it" })
     is SubmitResult.Rejected -> AlertContent(r.title ?: "Couldn't save", r.message)
-    is SubmitResult.Failure -> when (r.kind) {
-        Kind.Offline -> AlertContent("You're offline", "Check your connection and try again.", retryable = r.retryable)
-        Kind.Timeout -> AlertContent("Taking too long", "The server didn't respond. Try again.", retryable = r.retryable)
-        Kind.Server -> AlertContent("Something went wrong", "We couldn't save your changes. Try again.", retryable = r.retryable)
+    is SubmitResult.Failure -> when (r.kind) {   // import SubmitResult.Failure.Kind
         Kind.AuthExpired -> AlertContent("Session expired", "Please sign in again. Your changes are kept.", relogin = true)
+        Kind.Offline -> AlertContent("You're offline", "Check your connection and try again.", retryable = r.retryable)
+        else -> AlertContent("Something went wrong", "We couldn't save your changes. Try again.", retryable = r.retryable)
     }
 }
 
@@ -451,22 +450,19 @@ class FormSubmitter(
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
     private val _alert = MutableStateFlow<AlertContent?>(null)     // survives rotation
-    val alert: StateFlow<AlertContent?> = _alert.asStateFlow()
-    fun dismissAlert() { _alert.value = null }
+    val alert = _alert.asStateFlow(); fun dismissAlert() { _alert.value = null }
 
     fun <S> submit(
         endEditing: () -> Unit, commit: () -> S,
         validate: (S) -> AlertContent?,   // sets inline errors; non-null = invalid (R3)
-        action: suspend (S) -> SubmitResult,
-        onResult: (SubmitResult) -> AlertContent?,   // form-specific (field mapping); null -> alertContent()
+        action: suspend (S) -> SubmitResult, onResult: (SubmitResult) -> AlertContent?,   // form-specific (field mapping); null -> alertContent()
     ) {
         if (!running.compareAndSet(false, true)) return       // re-entrancy guard
         endEditing()                                            // R1
         val snapshot = commit()
         validate(snapshot)?.let { _alert.value = it; running.set(false); return }
         scope.launch {
-            val shownAt = now()
-            _busy.value = true                                  // R2 on
+            val shownAt = now(); _busy.value = true             // R2 on
             var result: SubmitResult? = null
             try {
                 result = action(snapshot)
@@ -541,8 +537,7 @@ class EditProfileViewModel @Inject constructor(
         val lines = Field.entries.mapNotNull { errs[it] } + extra
         if (lines.isEmpty()) return null
         val shown = lines.take(3) + listOfNotNull(if (lines.size > 3) "and ${lines.size - 3} more" else null)
-        return AlertContent("Check your details", shown.joinToString("\n") { "• $it" },
-            focus = Field.entries.firstOrNull { it in errs })
+        return AlertContent("Check your details", shown.joinToString("\n") { "• $it" }, Field.entries.firstOrNull { it in errs })
     }
 
     suspend fun send(snap: ProfileSnapshot): SubmitResult = repo.update(snap, idempotencyKey)
@@ -604,9 +599,7 @@ fun rememberProfileSubmit(vm: EditProfileViewModel, requesters: Map<Field, Focus
 fun BlockingHud(visible: Boolean, message: String = "Saving…") {
     if (!visible) return
     BackHandler(enabled = true) { /* swallow */ }
-    PredictiveBackHandler(enabled = true) { progress ->
-        try { progress.collect { } } catch (_: CancellationException) { }
-    }
+    PredictiveBackHandler(enabled = true) { p -> try { p.collect { } } catch (_: CancellationException) { } }
     Dialog(
         onDismissRequest = { /* never dismiss from user input */ },
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false,
@@ -619,8 +612,7 @@ fun BlockingHud(visible: Boolean, message: String = "Saving…") {
         ) {
             Surface(shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(12.dp))
+                    CircularProgressIndicator(); Spacer(Modifier.height(12.dp))
                     Text(message, style = MaterialTheme.typography.bodyMedium)
                 }
             }
@@ -647,7 +639,7 @@ fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> 
     val alert by vm.submitter.alert.collectAsStateWithLifecycle()
     var showDiscard by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(vm) { vm.events.collect { FormEvent.Saved -> onDone() } }
+    LaunchedEffect(vm) { vm.events.collect { onDone() } }   // Saved
 
     // Discard prompt only when idle. The HUD's own BackHandler is composed later, so it wins while busy.
     BackHandler(enabled = state.isDirty && !busy) { showDiscard = true }
@@ -696,13 +688,12 @@ fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> 
     }
 
     alert?.takeIf { !busy }?.let { a ->                 // R3: every submit failure; never over the HUD
-        val close = { vm.submitter.dismissAlert(); a.focus?.let { requesters[it]?.requestFocus() }
-            if (a.relogin) onRelogin() }
+        val close = { vm.submitter.dismissAlert(); a.focus?.let { requesters[it]?.requestFocus() }; if (a.relogin) onRelogin() }
         AlertDialog(
             onDismissRequest = { close() },
             title = { Text(a.title) }, text = { Text(a.message) },
-            confirmButton = { TextButton(onClick = { vm.submitter.dismissAlert(); a.retry?.invoke() ?: close() }) {
-                Text(if (a.retry != null) "Retry" else "OK") } },
+            confirmButton = { TextButton(onClick = { vm.submitter.dismissAlert(); a.retry?.invoke() ?: close() })
+                { Text(if (a.retry != null) "Retry" else "OK") } },
             dismissButton = a.retry?.let { { TextButton(onClick = { close() }) { Text("Cancel") } } },
         )
     }
@@ -810,6 +801,5 @@ class EditProfileFragment : Fragment(R.layout.fragment_edit_profile) {
 
     override fun onDestroyView() { hud?.let { (it.parent as? ViewGroup)?.removeView(it) }; hud = null; super.onDestroyView() }
 }
-// Inline field errors (R3, Views): TextInputLayout.error = msg on focus loss +
-// ObjectAnimator.ofFloat(til, View.TRANSLATION_X, 0f, 10f, -10f, 6f, 0f) when ValueAnimator.areAnimatorsEnabled().
+// Inline field errors (Views): TextInputLayout.error on blur + ObjectAnimator TRANSLATION_X shake if areAnimatorsEnabled().
 ```
