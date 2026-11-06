@@ -25,6 +25,8 @@ Key OS gates (verify): `@FocusState`, `.submitLabel`, `.onSubmit`, `TextField(va
 >
 > Field-level validation **before** submit (on blur / while editing) is **inline only**: footer error text and/or red border, short shake (skipped under Reduce Motion), or a poptip. Never an alert for field-level validation; never only inline errors on submit. Success feedback may be a toast or navigation — only errors must be alerts.
 
+Sibling skills use the platform-native equivalent for R3: Android Material3 `AlertDialog` / `MaterialAlertDialogBuilder`, React Native `Alert.alert`, Flutter `showAdaptiveDialog` + `AlertDialog.adaptive`.
+
 All three rules are restated in the review checklist (section 12) and common bugs (section 13). A review that finds any form violating R1 or R2 reports it as **critical**.
 
 ## 0. Mental model
@@ -426,10 +428,8 @@ enum EditingEnder {
     /// Resign any first responder (incl. SwiftUI-hosted UITextFields: commits marked text, formatters),
     /// then let bindings / onChange / didEndEditing run before the model is read.
     static func endEditing(in view: UIView? = nil) async {
-        if let view { view.endEditing(true) } else {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                            to: nil, from: nil, for: nil)
-        }
+        if let view { view.endEditing(true) }
+        else { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(1))   // one more runloop turn (verify needed on your OS)
     }
@@ -460,7 +460,7 @@ func bullets(_ lines: [String]) -> String {
 
 /// R3: the ONE place that turns any failure into alert content.
 func alertContent(for error: Error, retrySafe: Bool) -> (title: String, message: String, retryable: Bool) {
-    let e: FormSubmitError = switch error {
+    let e: FormSubmitError = switch error {         // URLError → transport cases
     case let f as FormSubmitError: f
     case let u as URLError where u.code == .timedOut: .timeout
     case let u as URLError where [.notConnectedToInternet, .networkConnectionLost].contains(u.code): .offline
@@ -520,7 +520,7 @@ final class FormSubmitter {
             do { try await action() } catch { result = .failure(error) }
             await self.hud.hide(token)            // awaits min display; always runs
             self.isRunning = false
-            switch result {
+            switch result {                       // R3: alert only now, HUD is gone
             case .success: onSuccess()            // navigate after HUD is gone
             case .failure(let e) where e is CancellationError: break
             case .failure(let e):
@@ -573,9 +573,7 @@ final class BlockingHUD {
     private let state = HUDState()
 
     func show(message: String) -> Token {
-        let token = Token(shownAt: .now)
-        active.insert(token)
-        state.message = message
+        let token = Token(shownAt: .now); active.insert(token); state.message = message
         if window == nil { installWindow() }
         let delay = spinnerDelay
         Task { [state] in                       // touches blocked now; spinner fades in later
@@ -591,8 +589,7 @@ final class BlockingHUD {
         if state.visible, elapsed < minimumVisible {
             try? await Task.sleep(for: minimumVisible - elapsed)   // sleep error ignored: always hide
         }
-        active.remove(token)
-        guard active.isEmpty else { return }    // reference counted
+        active.remove(token); guard active.isEmpty else { return }    // reference counted
         state.visible = false; window?.isHidden = true; window = nil
         UIAccessibility.post(notification: .screenChanged, argument: nil)
     }
@@ -653,11 +650,10 @@ struct Shake: ViewModifier {
 /// UIKit: same for UIViewController-based forms.
 extension UIViewController {
     func setFormBackNavigationBlocked(_ blocked: Bool) {
-        navigationItem.hidesBackButton = blocked
+        navigationItem.hidesBackButton = blocked; isModalInPresentation = blocked
         navigationController?.interactivePopGestureRecognizer?.isEnabled = !blocked
-        isModalInPresentation = blocked
-        navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !blocked }
-        navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !blocked }
+        (navigationItem.leftBarButtonItems ?? []).forEach { $0.isEnabled = !blocked }
+        (navigationItem.rightBarButtonItems ?? []).forEach { $0.isEnabled = !blocked }
     }
 }
 ```
@@ -677,8 +673,7 @@ struct EditProfileScreen: View {
     let repository: ProfileRepository
     let initial: ProfileValues
     @Environment(\.dismiss) private var dismiss
-    @State private var model = ProfileFormModel()
-    @State private var submitter = FormSubmitter()
+    @State private var model = ProfileFormModel(); @State private var submitter = FormSubmitter()
     @State private var showDiscard = false
     @FocusState private var focus: ProfileField?
 
@@ -713,8 +708,7 @@ struct EditProfileScreen: View {
         .modifier(BlocksBackWhileSubmitting(isRunning: submitter.isRunning, isDirty: model.isDirty))
         .navigationBarBackButtonHidden(true)                // custom Cancel handles discard prompt
         .confirmationDialog("Discard changes?", isPresented: $showDiscard, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { dismiss() }
-            Button("Keep editing", role: .cancel) {}
+            Button("Discard", role: .destructive) { dismiss() }; Button("Keep editing", role: .cancel) {}
         }
         .submitAlert(submitter)                             // R3: every failure → native alert
         .onAppear { if !model.isDirty { model.load(initial) } }
@@ -749,8 +743,7 @@ struct EditProfileScreen: View {
             content()
                 .focused($focus, equals: f)
                 .onChange(of: model.values) { model.didEdit(f) }
-                .padding(6)
-                .overlay(RoundedRectangle(cornerRadius: 8)            // R3 inline: red border
+                .padding(6).overlay(RoundedRectangle(cornerRadius: 8)            // R3 inline: red border
                     .stroke(model.errors[f] == nil ? .clear : .red, lineWidth: 1))
                 .modifier(Shake(trigger: model.shakeCount[f, default: 0]))
                 .accessibilityLabel(label)
