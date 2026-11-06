@@ -483,14 +483,12 @@ final class FormSubmitter {
     var alert: SubmitAlert?                          // SwiftUI: `.submitAlert(submitter)`
     var presentAlert: (@MainActor (SubmitAlert) -> Void)?   // UIKit: UIAlertController presenter
     var onAuthExpired: @MainActor () -> Void = {}    // app-level route to re-login
-    private var task: Task<Void, Never>?
-    private let hud: BlockingHUD
-
+    private var task: Task<Void, Never>?; private let hud: BlockingHUD
     init(hud: BlockingHUD = .shared) { self.hud = hud }
     /// The ONLY entry point for any form action (R1 + R2 + R3). `validate` returns issue lines
     /// (non-empty → alert, no HUD/network). `onFailure` only maps errors inline; the alert is shown here.
     func run(message: String = "Saving…",
-             retrySafe: Bool = true,                 // false: non-idempotent without idempotency key
+             retrySafe: Bool = false,                // true only if idempotent / idempotency key
              endEditing: @escaping @MainActor () -> Void,
              validate: @escaping @MainActor () -> [String] = { [] },
              focusFirstInvalid: @escaping @MainActor () -> Void = {},
@@ -568,9 +566,7 @@ final class BlockingHUD {
     struct Token: Hashable { let id = UUID(); let shownAt: ContinuousClock.Instant }
 
     var minimumVisible: Duration = .milliseconds(500), spinnerDelay: Duration = .milliseconds(150)
-    private var window: UIWindow?
-    private var active: Set<Token> = []
-    private let state = HUDState()
+    private var window: UIWindow?; private var active: Set<Token> = []; private let state = HUDState()
 
     func show(message: String) -> Token {
         let token = Token(shownAt: .now); active.insert(token); state.message = message
