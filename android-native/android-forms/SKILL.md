@@ -1,6 +1,6 @@
 ---
 name: android-forms
-description: Use when implementing, reviewing, testing, or debugging forms in a native Android app (Kotlin, Jetpack Compose and Views) — login, sign-up, profile edit, checkout, address, OTP and multi-step wizards. Enforces two non-negotiable rules on every form, (R1) end editing before any Done/Save/Submit/Next/IME action (LocalFocusManager.clearFocus, LocalSoftwareKeyboardController.hide, Views clearFocus + InputMethodManager.hideSoftInputFromWindow) through one shared submit wrapper, and (R2) a full-screen blocking HUD while any form action runs that consumes all pointer input and blocks every back path (BackHandler, PredictiveBackHandler, OnBackPressedCallback, Dialog/ModalBottomSheet dismiss properties), with re-entrancy guard, minimum display time and guaranteed dismissal, and (R3) submit-time validation and server errors in a native AlertDialog / MaterialAlertDialogBuilder while field-level errors stay inline (supportingText, isError, shake, PlainTooltip). Also covers the submit pipeline, blur + submit validation, server field error mapping, KeyboardOptions/KeyboardActions IME chaining, imePadding/WindowInsets, bringIntoView, autofill semantics (ContentType), secure entry, masks via VisualTransformation/OutputTransformation, unsaved-changes discard prompt, drafts, multi-step state, accessibility and font scale. Siblings: ios-forms, react-native-forms, flutter-forms; related: android-network-offline-sync, android-crash-analytics, android-list-ux, android-deep-links.
+description: Use when implementing, reviewing, testing, or debugging forms in a native Android app (Kotlin, Jetpack Compose and Views) — login, sign-up, profile edit, checkout, address, OTP and multi-step wizards. Enforces two non-negotiable rules on every form, (R1) end editing before any Done/Save/Submit/Next/IME action (LocalFocusManager.clearFocus, LocalSoftwareKeyboardController.hide, Views clearFocus + InputMethodManager.hideSoftInputFromWindow) through one shared submit wrapper, and (R2) a full-screen blocking HUD while any form action runs that consumes all pointer input and blocks every back path (BackHandler, PredictiveBackHandler, OnBackPressedCallback, Dialog/ModalBottomSheet dismiss properties), with re-entrancy guard, minimum display time and guaranteed dismissal, and (R3) every submit failure (client validation, server field errors, business/409 errors, HTTP 4xx/5xx, timeout, offline, auth expired) in a native AlertDialog / MaterialAlertDialogBuilder after the HUD hides, with Retry when safe, never a toast/snackbar/banner, while field-level errors stay inline (supportingText, isError, shake, PlainTooltip). Also covers the submit pipeline, blur + submit validation, server field error mapping, KeyboardOptions/KeyboardActions IME chaining, imePadding/WindowInsets, bringIntoView, autofill semantics (ContentType), secure entry, masks via VisualTransformation/OutputTransformation, unsaved-changes discard prompt, drafts, multi-step state, accessibility and font scale. Siblings: ios-forms, react-native-forms, flutter-forms; related: android-network-offline-sync, android-crash-analytics, android-list-ux, android-deep-links.
 ---
 
 # Android Forms Skill
@@ -15,7 +15,13 @@ Sibling skills: **ios-forms**, **react-native-forms**, **flutter-forms** — sam
 >
 > **R2. FULL-PAGE BLOCKING HUD while any form action runs.** A full-screen overlay (spinner + optional message) that blocks **all** touches underneath (double taps, other buttons, bottom navigation, top app bar) **and** blocks every back path: top-app-bar Up arrow, system back button, gesture back, **predictive back** (no peek animation either), hardware back, `ModalBottomSheet` swipe-down / scrim tap, `Dialog` back / outside tap. Re-entrant submits are ignored. A minimum display time (~400 ms) prevents a flash. The HUD is **always** dismissed on success, error and cancellation (`try/finally`) — a stuck HUD is a bug. Accessibility: announce "Saving…" and keep TalkBack focus inside the overlay.
 
-> **R3. SUBMIT VALIDATION = NATIVE ALERT; FIELD VALIDATION = INLINE.** When a submit fails validation (client-side, or server-side errors returned on submit), show a native Material3 `AlertDialog` (Views: `MaterialAlertDialogBuilder`) with a title and a concise message listing what's wrong (several → a short list, or the first one); on dismiss, focus the first invalid field. Server errors are shown in the alert **after the HUD hides** and are also mapped to inline field errors. Field-level validation (on focus loss / while correcting, before submit) is shown **inline**: `isError` red outline + `supportingText` under the field, with a short shake (skipped when animations are off) or a `PlainTooltip`/popup anchored to the field. **Never** an alert for field-level validation; **never** only inline errors on submit.
+> **R3. ANY SUBMIT FAILURE = NATIVE ALERT; FIELD VALIDATION = INLINE.** Every failure of a submit shows a native Material3 `AlertDialog` (Views: `MaterialAlertDialogBuilder`) **after the HUD hides** — never a banner, toast or snackbar (they disappear, are easy to miss and are poorly announced):
+> - **Client validation / server field errors (400/422)**: title + concise list of what's wrong (several → short list); server field errors are **also** mapped inline onto the fields; on dismiss, focus the first invalid field.
+> - **Business / rule errors (409, "email already registered", "coupon expired")**: the server's title + message.
+> - **Other HTTP 4xx/5xx, timeout, offline**: friendly message; **Retry** + Cancel when the request is safe to retry (idempotency key), otherwise OK. Retry re-runs the same submit wrapper (R1 + R2 apply again).
+> - **Auth expired (401 after refresh failed)**: alert, then route to re-login on dismiss.
+>
+> Errors map to alert content in **one place** (`alertContent(result)` → title, message, retryable) inside the shared submitter, so every form gets it. Success feedback may still be a snackbar or navigation — only errors must be alerts. Field-level validation (on focus loss / while correcting, before submit) is shown **inline**: `isError` red outline + `supportingText` under the field, with a short shake (skipped when animations are off) or a `PlainTooltip`/popup anchored to the field. **Never** an alert for field-level validation; **never** only inline errors on submit.
 
 No exception for "simple" forms, single-field forms or settings toggles with a Save button. Reviews check all three rules on every form before anything else.
 
@@ -46,7 +52,8 @@ No exception for "simple" forms, single-field forms or settings toggles with a S
  |  4. action(snapshot)  -> repository -> API                    |
  |  5. finally: wait min display, busy = false (always)          |
  |  6. Success -> navigate / snackbar / reset dirty              |
- |     Error   -> inline + ALERT (R3) after HUD hides, focus 1st |
+ |     ANY error -> ALERT (R3) after HUD hides (field errs also  |
+ |       inline, focus 1st; Retry -> submit again; 401 -> login) |
  +---------------------------------------------------------------+
             |
  Back pressed while NOT busy and form dirty -> "Discard changes?"
@@ -84,7 +91,7 @@ Checkout      3-step wizard  address,shipping,payment   POST /orders        per 
 ### 2.1 Why
 - Compose fields with value-based state commit on every keystroke, but many forms do work **on blur**: trim, format phone/IBAN/amount, `"1,5" -> 1.5`, "apply on focus lost" in custom fields, blur validation that sets an error. If Save reads state while the field still has focus, that work hasn't run.
 - Views: `EditText` text is live, but `OnFocusChangeListener` formatters, `TextInputLayout` error updates, and custom views that commit on focus loss (spinners, number pickers, `AutoCompleteTextView` selection) only update on blur.
-- The keyboard staying up after Save covers the snackbar/error and looks broken; on success navigation it can linger over the next screen.
+- The keyboard staying up after Save covers the result and looks broken; on success navigation it can linger over the next screen.
 
 ### 2.2 Compose API
 - [ ] `val focusManager = LocalFocusManager.current` and `val keyboard = LocalSoftwareKeyboardController.current`.
@@ -143,7 +150,7 @@ Checkout      3-step wizard  address,shipping,payment   POST /orders        per 
 - [ ] Announce on show: `Modifier.semantics { liveRegion = LiveRegionMode.Polite; contentDescription = "Saving…" }` on the HUD, or `view.announceForAccessibility()` (deprecated on API 36 for most uses — prefer live region / pane title). A Dialog gets `paneTitle` semantics.
 - [ ] Focus trap: Dialog window does it for free. Root overlay: mark underlying content `Modifier.semantics { invisibleToUser() }`/`clearAndSetSemantics {}` while busy, or Views `importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS`.
 - [ ] Respect reduced motion: spinner is fine; skip decorative animations when `Settings.Global.ANIMATOR_DURATION_SCALE == 0`.
-- [ ] After hide: move focus to the result (snackbar, first error field, or the new screen's title).
+- [ ] After hide: move focus to the result (the error alert, then the first error field, or the new screen's title).
 
 ## 4. Submit pipeline
 
@@ -159,14 +166,15 @@ tap -> submitter.submit {
          when (result) {
            Success      -> form.markClean(); navigate/snackbar
            FieldErrors  -> form.showErrors(map(result)); alert(...)  // R3
-           Failure      -> snackbar/dialog with retry (keep input!)
-         }
+           else         -> alert(alertContent(result))  // R3: business msg,
+         }                  // Retry for 5xx/timeout/offline, 401 -> re-login
        }
 ```
 
 - [ ] The coordinator is reusable across forms (generic over the snapshot type) — one implementation, tested once.
 - [ ] Navigate **after** the HUD is hidden (or in the same frame as hide) so the next screen isn't covered and no back is blocked on the new destination.
 - [ ] One-shot events (navigate, snackbar) via a `Channel`/`SharedFlow` collected with `repeatOnLifecycle`/`LaunchedEffect`, not sticky state that re-fires on rotation.
+- [ ] **R3 for every failure**: the submitter (not each screen) turns the result into an alert via one `alertContent(result)` mapper — 409/business → server title + message; 5xx / timeout / offline → friendly text + **Retry**/Cancel if retryable (Retry calls the same `submit`, so R1 + R2 run again, same idempotency key); 401 after refresh failed → alert, then re-login. Alert state lives in the submitter (`StateFlow`, survives rotation) and is only set after `busy = false` — never rendered while the HUD is visible. No `Snackbar`/`Toast`/banner for errors.
 - [ ] Never clear the user's input on a failure. Passwords may be cleared on auth failure — then focus the password field.
 - [ ] Idempotency key per submit attempt (generated when the form opens or per logical attempt) so a retried POST after a timeout doesn't create duplicates.
 - [ ] Log `form_submitted` / `form_failed(reason, fields=["email"])` — no values (see **android-crash-analytics**).
@@ -179,7 +187,7 @@ tap -> submitter.submit {
 - [ ] Inline errors: Material3 `isError = true` + `supportingText = { Text(error) }`; Views `TextInputLayout.error = …` (and `error = null` to clear; `isErrorEnabled` keeps layout stable).
 - [ ] Error text says how to fix ("Enter a 5-digit ZIP code"), not just "Invalid".
 - [ ] After the submit alert is dismissed: focus the **first invalid field in visual order** (`FocusRequester` per field) and bring it into view (`BringIntoViewRequester` or `Modifier.bringIntoViewRequester`; Views `scrollView.requestChildFocus` / `smoothScrollTo`). Focusing opens the keyboard — intended for text fields; for pickers just scroll.
-- [ ] Server field errors: map API field keys → form field ids (`"address.zip" -> Field.Zip`); unknown keys → form-level error banner. Server errors clear when that field is edited.
+- [ ] Server field errors: map API field keys → form field ids (`"address.zip" -> Field.Zip`); unknown keys → extra lines in the same alert (no banner). Server errors clear when that field is edited.
 - [ ] Cross-field rules (password confirm, date range) validate on submit and on blur of the *second* field.
 - [ ] Validators are pure functions in the domain layer, unit-tested; locale-aware (decimal separator, postal codes per country).
 - [ ] Don't block submit with a disabled button as the only feedback — a disabled Save with no explanation is a classic consumer-app complaint. Prefer enabled button + errors on tap (disable only while busy).
@@ -257,6 +265,7 @@ tap -> submitter.submit {
 - IME Done on last field (`performImeAction()`) → submit runs with committed value and keyboard hidden.
 - While busy: `onRoot().performClick()`/tap on bottom bar does nothing; `Espresso.pressBack()` / `activity.onBackPressedDispatcher.onBackPressed()` leaves the screen in place; sheet swipe doesn't dismiss.
 - Double `performClick()` on Save → fake repository called once.
+- Fake 409 / 500 / offline → HUD gone, alert with server message / Retry (`onNodeWithText("Retry").performClick()` → repository called again under HUD); no snackbar.
 - Error result → HUD gone, alert shown (`onNodeWithText("Check your details")`), dismiss → first invalid field focused (`assertIsFocused()`); blur error → inline text, no dialog (`isDialog()` count 0).
 - Back while dirty & idle → discard dialog; while busy → no dialog.
 
@@ -279,7 +288,7 @@ tap -> submitter.submit {
 | 6 | Predictive back gesture during HUD (API 34+) | No peek animation, no navigation |
 | 7 | Up arrow / bottom-nav tab tap during HUD | Ignored (covered) |
 | 8 | Sheet swipe-down / scrim tap during HUD | Sheet stays |
-| 9 | Request fails (500 / timeout / offline) | HUD hides, input kept, error shown, retry possible |
+| 9 | Request fails (500 / timeout) | HUD hides, **then** native alert with Retry + Cancel; input kept |
 | 10 | Server field error | HUD hides, error under field, field focused & scrolled into view |
 | 11 | User/scope cancels (leaves via logout, job cancelled) | HUD hides (finally) |
 | 12 | Fast success (<100 ms) | HUD visible ≥ min display, no flash |
@@ -293,6 +302,11 @@ tap -> submitter.submit {
 | 20 | Submit with 2 invalid fields | Native alert lists both; inline errors shown; dismiss → first invalid focused |
 | 21 | Server returns field errors | HUD hides, then alert; errors also inline under mapped fields |
 | 22 | Animations off (developer options) | Inline error without shake |
+| 23 | Server business error (409 "email already registered") | HUD hides, alert shows server title + message, OK |
+| 24 | Tap Retry in the error alert | Same submitter runs again: end editing, HUD shown, one request |
+| 25 | Submit while offline | Alert "You're offline" with Retry; no toast/snackbar |
+| 26 | 401 after token refresh failed | Alert, then re-login screen on dismiss |
+| 27 | Any error result | Alert never visible while HUD is visible (no stacking) |
 
 ## 12. Common bugs to look for in review
 
@@ -310,7 +324,7 @@ tap -> submitter.submit {
 12. HUD flashes for 1 frame on fast responses (no min display).
 13. Navigation fired before the HUD hides; next screen is blocked or back disabled there.
 14. Validation on every keystroke shows "Invalid email" after the first letter.
-15. Server field errors shown only as a generic toast; user can't find the field.
+15. Server field errors shown only in a generic alert/toast, not mapped inline; user can't find the field.
 16. First invalid field not focused / not scrolled into view (hidden behind keyboard).
 17. Double inset padding (`Scaffold` + `imePadding`) or none at all (targetSdk 35, edge-to-edge) — Save hidden behind the keyboard.
 18. Missing autofill content types → password manager doesn't fill or offer to save; OTP not autofilled.
@@ -321,6 +335,7 @@ tap -> submitter.submit {
 23. **R3 violation**: submit validation shows only inline errors (user doesn't notice an error scrolled off-screen) or only a toast/snackbar instead of a native alert.
 24. **R3 violation**: alert dialog popped on blur / per field while typing; or shake ignores disabled animations.
 25. Server-error alert shown while the HUD is still up (two dialogs stacked), or errors not mapped inline.
+26. **R3 violation**: server / network / business error shown as a `Toast`, `Snackbar` or inline banner instead of a native alert — disappears, easily missed, not reliably announced by TalkBack; or each screen maps errors itself (inconsistent text, missing Retry).
 
 ## 13. Output format
 
@@ -328,7 +343,7 @@ tap -> submitter.submit {
 1. Form contract table (section 1) for each form found.
 2. R1 checklist per form: every action entry point listed (buttons, IME, menu, top bar) with ✅/❌ routed through the wrapper.
 3. R2 checklist per form: overlay coverage, each back path from the table in 3.2, re-entrancy, min display, finally-dismissal, a11y.
-3b. R3 checklist per form: submit-time (client + server) errors → native alert + inline; blur errors inline only (shake/tooltip, reduced-motion aware); focus first invalid after dismiss.
+3b. R3 checklist per form: every submit failure (client, 422, 409/business, 5xx, timeout, offline, 401) → native alert after HUD hides via one `alertContent` mapper, Retry when retryable, no toast/snackbar/banner; field errors also inline; blur errors inline only (shake/tooltip, reduced-motion aware); focus first invalid after dismiss.
 4. Other findings ordered by severity (data loss / duplicate submit > stuck UI > UX > polish), each with file:line and a fix.
 5. Missing tests from the scenario matrix.
 
@@ -336,7 +351,7 @@ tap -> submitter.submit {
 1. The form contract.
 2. `FormState`/ViewModel, validators, reuse or add the shared `FormSubmitter` + `BlockingHud` (one per app, not per screen).
 3. Screen wiring: every action through the submitter, IME chain, insets, autofill types, discard prompt.
-4. Unit + UI tests covering at least scenarios 1, 2, 4, 5, 9, 10, 12, 14, 19, 20, 21.
+4. Unit + UI tests covering at least scenarios 1, 2, 4, 5, 9, 10, 12, 14, 19, 20, 21, 23, 24, 25, 27.
 
 ## Appendix — Reference implementation (Kotlin, Compose, Material3)
 
@@ -354,7 +369,6 @@ data class ProfileSnapshot(val name: String, val email: String, val phone: Strin
 data class ProfileFormState(
     val fields: Map<Field, FieldState> = Field.entries.associateWith { FieldState() },
     val original: ProfileSnapshot? = null,
-    val formError: String? = null,
 ) {
     operator fun get(f: Field) = fields.getValue(f)
     val snapshot get() = ProfileSnapshot(this[Field.Name].text, this[Field.Email].text, this[Field.Phone].text, this[Field.Zip].text)
@@ -398,16 +412,35 @@ fun mapServerErrors(errors: Map<String, String>, keys: Map<String, Field>): Pair
 }
 ```
 
-### A.3 Submit coordinator (R1 + R2 core, UI-agnostic)
+### A.3 Submit coordinator (R1 + R2 + R3 core, UI-agnostic)
 
 ```kotlin
 sealed interface SubmitResult {
     data object Success : SubmitResult
-    data class FieldErrors(val errors: Map<String, String>) : SubmitResult
-    data class Failure(val message: String) : SubmitResult
+    data class FieldErrors(val errors: Map<String, String>) : SubmitResult        // 400/422
+    data class Rejected(val title: String?, val message: String) : SubmitResult   // 409 / business rule
+    data class Failure(val kind: Kind, val retryable: Boolean = true) : SubmitResult {
+        enum class Kind { Offline, Timeout, Server, AuthExpired }                 // 401 = refresh failed
+    }
 }
 
-/** The ONLY way a form action runs: endEditing injected by the UI (R1); busy drives the HUD (R2). */
+/** R3: what the native alert shows. retry != null -> "Retry" + "Cancel", else "OK". */
+data class AlertContent(val title: String, val message: String, val focus: Field? = null,
+    val retryable: Boolean = false, val relogin: Boolean = false, val retry: (() -> Unit)? = null)
+
+/** R3: the ONE place a submit result becomes alert text (null = no alert). */
+fun alertContent(r: SubmitResult): AlertContent? = when (r) {
+    SubmitResult.Success -> null
+    is SubmitResult.FieldErrors -> AlertContent("Check your details", r.errors.values.joinToString("\n") { "• $it" })
+    is SubmitResult.Rejected -> AlertContent(r.title ?: "Couldn't save", r.message)
+    is SubmitResult.Failure -> when (r.kind) {   // import SubmitResult.Failure.Kind
+        Kind.AuthExpired -> AlertContent("Session expired", "Please sign in again. Your changes are kept.", relogin = true)
+        Kind.Offline -> AlertContent("You're offline", "Check your connection and try again.", retryable = r.retryable)
+        else -> AlertContent("Something went wrong", "We couldn't save your changes. Try again.", retryable = r.retryable)
+    }
+}
+
+/** The ONLY way a form action runs: endEditing (R1), busy drives the HUD (R2), alert after hide (R3). */
 class FormSubmitter(
     private val scope: CoroutineScope,
     private val minDisplayMs: Long = 400,
@@ -416,32 +449,36 @@ class FormSubmitter(
     private val running = AtomicBoolean(false)
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
+    private val _alert = MutableStateFlow<AlertContent?>(null)     // survives rotation
+    val alert = _alert.asStateFlow(); fun dismissAlert() { _alert.value = null }
 
     fun <S> submit(
         endEditing: () -> Unit, commit: () -> S,
-        validate: (S) -> Boolean,   // shows inline errors + alert itself (R3)
-        action: suspend (S) -> SubmitResult, onResult: (SubmitResult) -> Unit,
+        validate: (S) -> AlertContent?,   // sets inline errors; non-null = invalid (R3)
+        action: suspend (S) -> SubmitResult, onResult: (SubmitResult) -> AlertContent?,   // form-specific (field mapping); null -> alertContent()
     ) {
         if (!running.compareAndSet(false, true)) return       // re-entrancy guard
         endEditing()                                            // R1
         val snapshot = commit()
-        if (!validate(snapshot)) { running.set(false); return }
+        validate(snapshot)?.let { _alert.value = it; running.set(false); return }
         scope.launch {
-            val shownAt = now()
-            _busy.value = true                                  // R2 on
+            val shownAt = now(); _busy.value = true             // R2 on
             var result: SubmitResult? = null
             try {
                 result = action(snapshot)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
-                result = SubmitResult.Failure(e.message ?: "Something went wrong")
+                result = SubmitResult.Failure(when (e) { is IOException -> Kind.Offline else -> Kind.Server })
             } finally {
                 val left = minDisplayMs - (now() - shownAt)
                 if (left > 0 && result != null) delay(left)     // skip delay when cancelled
                 _busy.value = false                             // ALWAYS
                 running.set(false)
             }
-            result?.let(onResult)                               // navigate after hide
+            val r = result ?: return@launch                     // cancelled: no alert
+            val c = onResult(r) ?: alertContent(r)              // navigate / alert only after hide
+            _alert.value = c?.let { if (it.retryable) it.copy(retry = {  // Retry = same wrapper, R1 + R2 again
+                submit(endEditing, commit, validate, action, onResult) }) else it }
         }
     }
 }
@@ -488,49 +525,40 @@ class EditProfileViewModel @Inject constructor(
         return _state.value.snapshot
     }
 
-    /** Returns first invalid field, or null when valid. */
-    fun validateAll(snap: ProfileSnapshot): Field? {
+    /** Sets inline errors; returns the alert content when invalid, null when valid. */
+    fun validateAll(snap: ProfileSnapshot): AlertContent? {
         val values = mapOf(Field.Name to snap.name, Field.Email to snap.email, Field.Phone to snap.phone, Field.Zip to snap.zip)
         val errs = validator.validateAll(values)
         _state.update { s -> s.copy(fields = s.fields.mapValues { (f, v) -> v.copy(touched = true, error = errs[f]) }) }
-        val first = Field.entries.firstOrNull { it in errs }
-        if (first != null) alert(errs, first)                    // R3: inline AND alert on submit
-        return first
+        return checkDetails(errs)                                // R3: inline AND alert on submit
     }
 
-    private fun alert(errs: Map<Field, String>, focus: Field?, extra: List<String> = emptyList()) {
+    private fun checkDetails(errs: Map<Field, String>, extra: List<String> = emptyList()): AlertContent? {
         val lines = Field.entries.mapNotNull { errs[it] } + extra
-        _events.trySend(FormEvent.Alert("Check your details", lines.take(3) +
-            listOfNotNull(if (lines.size > 3) "and ${lines.size - 3} more" else null), focus))
+        if (lines.isEmpty()) return null
+        val shown = lines.take(3) + listOfNotNull(if (lines.size > 3) "and ${lines.size - 3} more" else null)
+        return AlertContent("Check your details", shown.joinToString("\n") { "• $it" }, Field.entries.firstOrNull { it in errs })
     }
 
     suspend fun send(snap: ProfileSnapshot): SubmitResult = repo.update(snap, idempotencyKey)
 
-    fun handle(result: SubmitResult) {
-        when (result) {
-            SubmitResult.Success -> {
-                _state.update { it.copy(original = Normalizer.normalize(it.snapshot)) } // mark clean first
-                _events.trySend(FormEvent.Saved)
-            }
-            is SubmitResult.FieldErrors -> {
-                val (known, unknown) = mapServerErrors(result.errors,
-                    mapOf("name" to Field.Name, "email" to Field.Email, "phone" to Field.Phone, "address.zip" to Field.Zip))
-                _state.update { s -> s.copy(formError = unknown,
-                    fields = s.fields.mapValues { (f, v) -> known[f]?.let { v.copy(error = it) } ?: v }) }
-                alert(known, Field.entries.firstOrNull { it in known }, listOfNotNull(unknown)) // HUD already hidden
-            }
-            is SubmitResult.Failure -> _events.trySend(FormEvent.Message(result.message))
+    /** Called after the HUD hid. Returns alert content for field errors; other errors -> alertContent(). */
+    fun handle(result: SubmitResult): AlertContent? = when (result) {
+        SubmitResult.Success -> {
+            _state.update { it.copy(original = Normalizer.normalize(it.snapshot)) } // mark clean first
+            _events.trySend(FormEvent.Saved); null
         }
+        is SubmitResult.FieldErrors -> {
+            val (known, unknown) = mapServerErrors(result.errors,
+                mapOf("name" to Field.Name, "email" to Field.Email, "phone" to Field.Phone, "address.zip" to Field.Zip))
+            _state.update { s -> s.copy(fields = s.fields.mapValues { (f, v) -> known[f]?.let { v.copy(error = it) } ?: v }) }
+            checkDetails(known, listOfNotNull(unknown)) ?: alertContent(result)  // inline AND alert
+        }
+        else -> null                                     // 409 / 5xx / timeout / offline / 401: shared mapper
     }
 }
 
-sealed interface FormEvent {
-    data object Saved : FormEvent
-    data class Focus(val field: Field) : FormEvent
-    /** R3: native alert for submit-time errors; focus [focus] after dismiss. */
-    data class Alert(val title: String, val lines: List<String>, val focus: Field?) : FormEvent
-    data class Message(val text: String) : FormEvent
-}
+sealed interface FormEvent { data object Saved : FormEvent }   // success only; errors are submitter alerts
 ```
 
 ### A.5 Compose: end-editing + submit wrapper
@@ -554,7 +582,7 @@ fun rememberProfileSubmit(vm: EditProfileViewModel, requesters: Map<Field, Focus
             vm.submitter.submit(
                 endEditing = endEditing,
                 commit = vm::commitAll,
-                validate = { snap -> vm.validateAll(snap) == null }, // alert focuses on dismiss
+                validate = vm::validateAll,      // alert focuses first invalid on dismiss
                 action = vm::send,
                 onResult = vm::handle,
             )
@@ -571,9 +599,7 @@ fun rememberProfileSubmit(vm: EditProfileViewModel, requesters: Map<Field, Focus
 fun BlockingHud(visible: Boolean, message: String = "Saving…") {
     if (!visible) return
     BackHandler(enabled = true) { /* swallow */ }
-    PredictiveBackHandler(enabled = true) { progress ->
-        try { progress.collect { } } catch (_: CancellationException) { }
-    }
+    PredictiveBackHandler(enabled = true) { p -> try { p.collect { } } catch (_: CancellationException) { } }
     Dialog(
         onDismissRequest = { /* never dismiss from user input */ },
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false,
@@ -586,8 +612,7 @@ fun BlockingHud(visible: Boolean, message: String = "Saving…") {
         ) {
             Surface(shape = MaterialTheme.shapes.large, tonalElevation = 6.dp) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(12.dp))
+                    CircularProgressIndicator(); Spacer(Modifier.height(12.dp))
                     Text(message, style = MaterialTheme.typography.bodyMedium)
                 }
             }
@@ -605,24 +630,16 @@ fun Modifier.consumeAllPointers(): Modifier = pointerInput(Unit) {
 
 ```kotlin
 @Composable
-fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> Unit) {
+fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> Unit, onRelogin: () -> Unit) {
     val state by vm.state.collectAsStateWithLifecycle()
     val busy by vm.submitter.busy.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val requesters = remember { Field.entries.associateWith { FocusRequester() } }
     val submit = rememberProfileSubmit(vm, requesters)
-    val snackbar = remember { SnackbarHostState() }
+    val alert by vm.submitter.alert.collectAsStateWithLifecycle()
     var showDiscard by rememberSaveable { mutableStateOf(false) }
-    var alert by remember { mutableStateOf<FormEvent.Alert?>(null) }
 
-    LaunchedEffect(vm) {
-        vm.events.collect { e -> when (e) {
-            FormEvent.Saved -> onDone()
-            is FormEvent.Focus -> requesters[e.field]?.requestFocus()
-            is FormEvent.Message -> snackbar.showSnackbar(e.text)
-            is FormEvent.Alert -> alert = e                  // R3: shown after HUD hid
-        } }
-    }
+    LaunchedEffect(vm) { vm.events.collect { onDone() } }   // Saved
 
     // Discard prompt only when idle. The HUD's own BackHandler is composed later, so it wins while busy.
     BackHandler(enabled = state.isDirty && !busy) { showDiscard = true }
@@ -639,14 +656,12 @@ fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> 
                 actions = { TextButton(enabled = !busy, onClick = submit) { Text("Save") } },
             )
         },
-        snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(
             Modifier.padding(padding).consumeWindowInsets(padding).imePadding().verticalScroll(rememberScrollState())
                 .pointerInput(Unit) { detectTapGestures { focusManager.clearFocus() } }.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            state.formError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             FormField(vm, state, Field.Name, "Full name", requesters,
                 KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Next),
                 ContentType.PersonFullName)
@@ -672,13 +687,14 @@ fun EditProfileScreen(vm: EditProfileViewModel = hiltViewModel(), onDone: () -> 
         )
     }
 
-    alert?.let { a ->                                   // R3: submit-time errors only
-        val close = { alert = null; a.focus?.let { requesters[it]?.requestFocus() } }
+    alert?.takeIf { !busy }?.let { a ->                 // R3: every submit failure; never over the HUD
+        val close = { vm.submitter.dismissAlert(); a.focus?.let { requesters[it]?.requestFocus() }; if (a.relogin) onRelogin() }
         AlertDialog(
             onDismissRequest = { close() },
-            title = { Text(a.title) },
-            text = { Text(a.lines.joinToString("\n") { "• $it" }) },
-            confirmButton = { TextButton(onClick = { close() }) { Text("OK") } },
+            title = { Text(a.title) }, text = { Text(a.message) },
+            confirmButton = { TextButton(onClick = { vm.submitter.dismissAlert(); a.retry?.invoke() ?: close() })
+                { Text(if (a.retry != null) "Retry" else "OK") } },
+            dismissButton = a.retry?.let { { TextButton(onClick = { close() }) { Text("Cancel") } } },
         )
     }
 
@@ -721,7 +737,7 @@ private fun FormField(
 }
 ```
 
-### A.8 Views: end editing, back blocking, overlay, submit alert
+### A.8 Views: end editing, back blocking, overlay, submit error alert
 
 ```kotlin
 fun Activity.endEditing(root: View) {                // R1; root is focusableInTouchMode
@@ -742,7 +758,7 @@ class EditProfileFragment : Fragment(R.layout.fragment_edit_profile) {
         val submit = {
             vm.submitter.submit({ requireActivity().endEditing(b.root) },
                 { Field.entries.forEach(vm::onBlur); vm.commitAll() },
-                { vm.validateAll(it) == null }, vm::send, vm::handle)
+                vm::validateAll, vm::send, vm::handle)
         }
         b.save.setOnClickListener { submit() }
         b.zip.setOnEditorActionListener { _, id, ev ->
@@ -752,15 +768,17 @@ class EditProfileFragment : Fragment(R.layout.fragment_edit_profile) {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { vm.submitter.busy.collect { setBusy(b, it) } }
-                launch { vm.events.collect { e -> when (e) {
-                    FormEvent.Saved -> findNavController().popBackStack()
-                    is FormEvent.Alert -> MaterialAlertDialogBuilder(requireContext())   // R3
-                        .setTitle(e.title).setMessage(e.lines.joinToString("\n") { "• $it" })
-                        .setPositiveButton(android.R.string.ok, null)
-                        .setOnDismissListener { e.focus?.let { f -> b.fieldFor(f).requestFocus() } }
+                launch { vm.events.collect { findNavController().popBackStack() } }   // Saved
+                launch { vm.submitter.alert.filterNotNull().collect { a ->          // R3, set after HUD hid
+                    vm.submitter.dismissAlert()                                       // consume once
+                    MaterialAlertDialogBuilder(requireContext()).setTitle(a.title).setMessage(a.message)
+                        .apply { a.retry?.let { r -> setPositiveButton("Retry") { _, _ -> r() }
+                            setNegativeButton(android.R.string.cancel, null) }
+                            ?: setPositiveButton(android.R.string.ok, null) }
+                        .setOnDismissListener { a.focus?.let { f -> b.fieldFor(f).requestFocus() }
+                            if (a.relogin) findNavController().navigate(R.id.login) }
                         .show()
-                    else -> Unit
-                } } }
+                } }
             }
         }
     }
@@ -783,6 +801,5 @@ class EditProfileFragment : Fragment(R.layout.fragment_edit_profile) {
 
     override fun onDestroyView() { hud?.let { (it.parent as? ViewGroup)?.removeView(it) }; hud = null; super.onDestroyView() }
 }
-// Inline field errors (R3, Views): TextInputLayout.error = msg on focus loss +
-// ObjectAnimator.ofFloat(til, View.TRANSLATION_X, 0f, 10f, -10f, 6f, 0f) when ValueAnimator.areAnimatorsEnabled().
+// Inline field errors (Views): TextInputLayout.error on blur + ObjectAnimator TRANSLATION_X shake if areAnimatorsEnabled().
 ```

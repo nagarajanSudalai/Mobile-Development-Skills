@@ -13,7 +13,7 @@ Guide for building, auditing and testing **forms** in a Flutter consumer app: si
 >
 > **R2 — FULL-PAGE BLOCKING HUD while any form action runs.** A full-screen overlay (spinner + optional message) that blocks **all** touches underneath (double taps, other buttons, bottom nav, app bar) **and** all back navigation (app-bar back, Android system back + predictive back, iOS swipe-back, sheet drag/barrier dismiss, hardware back). Re-entrant submits are ignored. Minimum display time (~400 ms) to avoid flash. **Always** dismissed on success, error and cancellation (`try/finally`). Announced to screen readers ("Saving…") with focus trapped inside.
 >
-> **R3 — SUBMIT VALIDATION = NATIVE ALERT; FIELD VALIDATION = INLINE.** When validation fails on submit (client rules, or server field errors returned after the HUD hides), show a platform-native alert via `showAdaptiveDialog` + `AlertDialog.adaptive` (Cupertino alert on iOS/macOS, Material on Android) with a title and concise message listing what's wrong (several → bullet list); after dismiss, focus + scroll to the first invalid field. Field-level validation before submit (on focus loss / while editing) is shown **inline only**: `InputDecoration.errorText` under the field + error border, with a short shake (skipped when `MediaQuery.disableAnimationsOf` is true), or a tooltip anchored to the field. Never a dialog for field-level validation; never only inline errors on submit. Server field errors also map onto inline errors.
+> **R3 — EVERY SUBMIT FAILURE = NATIVE ALERT; FIELD VALIDATION = INLINE.** Any failure from a submit — client validation, server field errors (422), server business/rule errors ("email already registered", "coupon expired"), other HTTP 4xx/5xx, timeouts, offline/network failures, auth expired (401 after refresh failed) — shows a native alert **after the HUD hides**, never a banner, toast or SnackBar. Map errors to alert content in one place (`alertContent(error)` → title, message, retryable). Field errors: alert lists them **and** they map inline; focus first invalid field on dismiss. Business errors: server's title + message. HTTP/timeout/offline: friendly message + **Retry** (only when the request is safe to retry) + Cancel/OK; Retry re-runs the same submit wrapper (R1 + R2 again). Auth expired: alert, then route to re-login. Success feedback may still be a SnackBar or navigation — only errors must be alerts. For validation that fails on submit, show a platform-native alert via `showAdaptiveDialog` + `AlertDialog.adaptive` (Cupertino alert on iOS/macOS, Material on Android) with a title and concise message listing what's wrong (several → bullet list); after dismiss, focus + scroll to the first invalid field. Field-level validation before submit (on focus loss / while editing) is shown **inline only**: `InputDecoration.errorText` under the field + error border, with a short shake (skipped when `MediaQuery.disableAnimationsOf` is true), or a tooltip anchored to the field. Never a dialog for field-level validation; never only inline errors on submit. Server field errors also map onto inline errors. Platform equivalents: iOS `.alert` / `UIAlertController`; Android Material3 `AlertDialog` / `MaterialAlertDialogBuilder`; React Native `Alert.alert`; Flutter `showAdaptiveDialog` + `AlertDialog.adaptive`.
 
 Form packages and framework APIs move. Before shipping, **verify the current API** for your `flutter --version`: `PopScope` (`onPopInvoked` was deprecated in Flutter 3.22 in favour of `onPopInvokedWithResult`), `TapRegion` / `TextField.onTapOutside` (3.10+), `SemanticsService.announce` (newer releases add a view-aware `sendAnnouncement`; check deprecation), `AutofillHints` constants, `showModalBottomSheet` parameters (`useSafeArea`, `showDragHandle`, `isScrollControlled`), and any form package you use (`flutter_form_builder`, `reactive_forms`, `mask_text_input_formatter`). Check `pubspec.lock`; don't trust memory.
 
@@ -41,9 +41,12 @@ Version gates worth knowing:
                    → sheet: isDismissible/enableDrag already false, PopScope inside
    7. await action(payload)  (flutter-network-offline-sync)
    8. finally: wait min display, busy = false → HUD hides
-   9. success → finishAutofillContext, navigate/toast
-      error   → map server field errors → inline errorText AND R3 adaptive alert
-                → after dismiss focus first invalid field
+   9. success → finishAutofillContext, navigate/SnackBar
+      error   → R3 adaptive alert (HUD already hidden), content from alertContent(e):
+                field (422) → also inline errorText; dismiss → focus first invalid
+                business (409…) → server title + message
+                HTTP/timeout/offline → friendly msg + Retry → re-run submit (R1+R2)
+                auth expired → alert, then re-login route
 ```
 
 Rules that follow from the model:
@@ -124,7 +127,7 @@ Checklist:
 - [ ] HUD covers app bar, bottom nav (including shell nav), FAB, and sheet content.
 - [ ] Back is blocked for: app-bar back, Android back, predictive back, iOS swipe-back, sheet barrier tap, sheet drag, dialog barrier, Escape key.
 - [ ] Double/triple tap on Submit and IME Done produce exactly one API call.
-- [ ] HUD hides on success, validation-from-server error, network error, timeout, and user cancel (if cancel offered).
+- [ ] HUD hides on success, validation-from-server error, network error, timeout, and user cancel (if cancel offered) — and hides **before** any error alert appears.
 - [ ] No programmatic `pop` / route change occurs while busy.
 - [ ] Screen reader announces "Saving…" and cannot reach controls behind.
 
@@ -133,9 +136,64 @@ Checklist:
 Order is fixed: **end editing → validate all → show HUD → API → hide HUD → success or error.**
 - Validation failure never shows the HUD.
 - Success: `TextInput.finishAutofillContext(shouldSave: true)` for credential forms, mark form clean (so the discard prompt doesn't fire), then navigate / pop with result / show SnackBar. Navigate **after** busy = false so `PopScope` permits it (or pop with the route's own result after the HUD hides).
-- Error: map `ApiFieldError(field, message)` to inline field errors **and** show them in the R3 adaptive alert after the HUD hides; on dismiss focus + scroll to the first invalid field. Network/non-field errors: adaptive alert or banner with retry.
+- Error: map `ApiFieldError(fieldErrors)` (422) to inline field errors **and** show them in the R3 adaptive alert after the HUD hides; on dismiss focus + scroll to the first invalid field. Business errors (409 etc.): alert with the server's title + message. Other HTTP 4xx/5xx, timeout, offline: alert with a friendly message, **Retry** (only if the request is safe to retry, e.g. idempotent or has an idempotency key) + Cancel; Retry calls the same wrapper again (R1 + R2 apply). Auth expired (401 after refresh failed): alert, then route to re-login. Never a banner, toast or SnackBar for a submit error. All mapping lives in `alertContent(error)` inside the shared wrapper so every form gets it.
+
+R3 error model — one mapping for every form (used by A1 `FormController.submit`):
+
+```dart
+class ApiBusinessError implements Exception { // 409 / rule errors
+  ApiBusinessError(this.title, this.message);
+  final String title, message;
+}
+class ApiHttpError implements Exception { ApiHttpError(this.status); final int status; }
+class OfflineError implements Exception {}
+class AuthExpiredError implements Exception {} // 401 after refresh failed
+
+class AlertContent {
+  const AlertContent(this.title, this.message,
+      {this.retryable = false, this.reLogin = false});
+  final String title, message;
+  final bool retryable, reLogin;
+}
+
+/// R3: the ONE place that maps a submit failure to native-alert content.
+AlertContent alertContent(Object e) => switch (e) {
+      ApiBusinessError(:final title, :final message) =>
+        AlertContent(title, message),
+      AuthExpiredError() => const AlertContent(
+          'Session expired', 'Please sign in again.', reLogin: true),
+      OfflineError() => const AlertContent("You're offline",
+          'Check your connection and try again.', retryable: true),
+      TimeoutException() => const AlertContent('Taking too long',
+          'The request timed out. Please try again.', retryable: true),
+      ApiHttpError(:final status) => AlertContent('Something went wrong',
+          'Please try again.', retryable: status >= 500 || status == 408 || status == 429),
+      _ => const AlertContent(
+          'Something went wrong', 'Please try again.', retryable: true),
+    };
+
+/// R3 for non-field failures: business, HTTP, timeout, offline, auth.
+Future<bool> showErrorAlert(
+        BuildContext context, AlertContent c, bool offerRetry) async =>
+    await showAdaptiveDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog.adaptive(
+        title: Text(c.title),
+        content: Text(c.message),
+        actions: [
+          if (offerRetry) ...[
+            adaptiveAction(ctx, 'Cancel', () => Navigator.pop(ctx, false)),
+            adaptiveAction(ctx, 'Retry', () => Navigator.pop(ctx, true)),
+          ] else
+            adaptiveAction(ctx, 'OK', () => Navigator.pop(ctx, false)),
+        ],
+      ),
+    ) ??
+    false;
+```
+
 - Log `form_submit`, `form_submit_failed{reason}`, never field values or PII (**flutter-crash-analytics**).
-- Offline: either block with a clear message or enqueue and treat as success with "will sync" copy (**flutter-network-offline-sync**). Decide per form.
+- Offline: either fail with the R3 offline alert (Retry) or enqueue and treat as success with "will sync" copy (**flutter-network-offline-sync**). Decide per form.
 
 ## 5. Validation
 
@@ -144,7 +202,7 @@ Order is fixed: **end editing → validate all → show HUD → API → hide HUD
 - [ ] Async checks (username taken) run on blur/debounced, results stored in state and returned by the validator; never `await` inside a validator.
 - [ ] Server errors: use `FormField.forceErrorText` (Flutter 3.24+; verify) or `InputDecoration.errorText` fed from state; clear the server error when that field changes.
 - [ ] First error: find first invalid field in visual order, `focusNode.requestFocus()` and `Scrollable.ensureVisible(fieldKey.currentContext!)`.
-- [ ] **R3**: failed submit (client or server) → `showAdaptiveDialog` + `AlertDialog.adaptive` (title "Check your details", message listing errors, single OK via `adaptiveAction`); shown after the HUD hides, never stacked on it; on dismiss focus the first invalid field. Inline errors are also shown.
+- [ ] **R3**: failed submit (client, server field, business, HTTP, timeout, offline, auth) → `showAdaptiveDialog` + `AlertDialog.adaptive` (validation: "Check your details" + list + OK; other errors: `alertContent` title/message + Retry/Cancel when retryable); shown after the HUD hides, never stacked on it; on dismiss focus the first invalid field. Inline errors are also shown.
 - [ ] **R3**: blur/typing validation is inline only (`errorText`, error border, shake via `ShakeOnError` honouring `MediaQuery.disableAnimationsOf`, or `Tooltip` anchored to field) — never a dialog.
 - [ ] Error messages are specific and localised; don't show "Required" before the user touched the field.
 - [ ] Trim/normalise in `onSaved` / payload builder, not by rewriting controller text while typing.
@@ -270,7 +328,13 @@ Scenario matrix:
 | 7 | iOS swipe-back during HUD | Gesture doesn't start |
 | 8 | App-bar back / bottom nav tab / other button during HUD | Blocked |
 | 9 | Sheet form: drag down / tap barrier during HUD | Sheet stays |
-| 10 | API returns error / times out / user cancels | HUD hides; error shown; form editable |
+| 10 | API returns error / times out / user cancels | HUD hides; then native alert (not toast/banner); form editable |
+| 10b | 409 / business error ("email already registered") | Alert with server's title + message |
+| 10c | 500 or timeout | Alert with friendly message + Retry + Cancel |
+| 10d | Tap Retry in the alert | Same wrapper re-runs: unfocus, validate, HUD shown, one request |
+| 10e | Submit while offline | Alert ("You're offline") with Retry; no silent failure |
+| 10f | 401 after refresh failed | Alert "Session expired", then re-login route |
+| 10g | Any error path | Alert never visible while HUD is visible |
 | 11 | Very fast response | HUD visible ≥ min time, no flash |
 | 12 | Server field errors | HUD hides, then alert lists them; also inline on right fields; cleared on edit |
 | 13 | Dirty form, back (not submitting) | "Discard changes?" shown |
@@ -289,6 +353,7 @@ Widget test tips: `tester.showKeyboard(finder)`, `tester.testTextInput.receiveAc
 - **R2 violation**: spinner inside the button only; user taps back, tab bar, or a second button mid-request.
 - **R2 violation**: HUD in route Stack while bottom nav lives in shell → tabs still tappable.
 - **R3 violation**: failed submit only turns fields red (user misses off-screen error), or a dialog pops on every blur; Material `AlertDialog` on iOS instead of `.adaptive`; alert shown while HUD still up.
+- **R3 violation**: server/network error shown as a toast, banner or SnackBar instead of a native alert — easy to miss, disappears on its own, not reliably announced or focusable by screen readers. Also: error mapping duplicated per screen instead of one `alertContent`.
 - Stuck HUD: `busy = false` not in `finally`; exception or early `return` leaves it up; no request timeout.
 - Using `WillPopScope` (deprecated) or `PopScope` set via async decision → predictive back ignores it.
 - Programmatic `Navigator.pop` during submit bypasses `PopScope`.
@@ -303,9 +368,9 @@ Widget test tips: `tester.showKeyboard(finder)`, `tester.testTextInput.receiveAc
 
 ## 13. Output format
 
-**Review**: list findings grouped by R1, R2, R3, validation, keyboard, fields/autofill, unsaved changes, a11y; each with file:line, severity (R1/R2/R3 violations are always High), why, and a concrete fix referencing the appendix pieces. End with the scenario matrix rows that fail.
+**Review**: list findings grouped by R1, R2, R3, validation, keyboard, fields/autofill, unsaved changes, a11y; each with file:line, severity (R1/R2/R3 violations — including any submit error shown as banner/toast/SnackBar — are always High), why, and a concrete fix referencing the appendix pieces. End with the scenario matrix rows that fail.
 
-**Implement**: deliver `FormController` + `HudScope`/`BlockingHud` if missing (shared, not per screen), wire the screen through them, add widget tests for scenarios 1, 2, 4, 5, 6, 10, 13, 14. State assumptions (state management, presentation, offline policy) and anything left to verify on device (predictive back, iOS swipe, autofill prompt).
+**Implement**: deliver `FormController` + `HudScope`/`BlockingHud` if missing (shared, not per screen), wire the screen through them, add widget tests for scenarios 1, 2, 4, 5, 6, 10, 10b–10g, 13, 14. Submit errors always surface as native alerts from the shared wrapper (no banner/toast/SnackBar paths). State assumptions (state management, presentation, offline policy) and anything left to verify on device (predictive back, iOS swipe, autofill prompt).
 
 ## Appendix — reference code (Dart)
 
@@ -318,12 +383,10 @@ import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 
-class ApiFieldError implements Exception { // field id -> message
-  ApiFieldError(this.fieldErrors, [this.message]);
+class ApiFieldError implements Exception { // 422: field id -> message
+  ApiFieldError(this.fieldErrors);
   final Map<String, String> fieldErrors;
-  final String? message;
 }
-
 typedef FormAction<T> = Future<T> Function();
 
 class FormController extends ChangeNotifier {
@@ -338,7 +401,6 @@ class FormController extends ChangeNotifier {
 
   bool _busy = false;
   bool get busy => _busy;
-  String? bannerError;
   AutovalidateMode autovalidateMode = AutovalidateMode.disabled;
   bool _disposed = false;
 
@@ -370,6 +432,7 @@ class FormController extends ChangeNotifier {
     bool validate = true,
     void Function(T result)? onSuccess,
     void Function(Object error)? onError,
+    bool retrySafe = false, // true only if idempotent / sent with an idempotency key
   }) async {
     if (_busy) return null; // re-entrancy guard (sync, before any await)
     _busy = true; // block touches/back immediately
@@ -380,7 +443,6 @@ class FormController extends ChangeNotifier {
       final form = formKey.currentState;
       if (validate && form != null) {
         _serverErrors.clear();
-        bannerError = null;
         if (!form.validate()) {
           autovalidateMode = AutovalidateMode.onUserInteraction;
           _busy = false; // validation failure: no HUD time
@@ -396,21 +458,25 @@ class FormController extends ChangeNotifier {
       _notify();
       onSuccess?.call(result);
       return result;
-    } on ApiFieldError catch (e) {
-      await _holdMinimum(started);
-      _serverErrors
-        ..clear()
-        ..addAll(e.fieldErrors);
-      bannerError = e.message;
-      _busy = false; // HUD hides BEFORE the alert
-      _notify();
-      await _alertErrors(); // R3: server errors in alert + inline
-      onError?.call(e);
-      return null;
     } catch (e) {
       await _holdMinimum(started);
-      bannerError = 'Something went wrong. Please try again.';
+      _busy = false; // R3: HUD hides BEFORE any alert
+      _notify();
       onError?.call(e);
+      if (e is ApiFieldError) {
+        _serverErrors
+          ..clear()
+          ..addAll(e.fieldErrors);
+        await _alertErrors(); // alert lists them + inline + focus first
+        return null;
+      }
+      final c = alertContent(e); // never a banner/toast/SnackBar
+      final retry = await errorPresenter?.call(c, c.retryable && retrySafe);
+      if (c.reLogin) onAuthExpired?.call();
+      if (retry == true) { // same wrapper again: R1 + R2 apply
+        return submit(action, validate: validate, onSuccess: onSuccess,
+            onError: onError, retrySafe: retrySafe);
+      }
       return null;
     } finally {
       // R2: ALWAYS dismiss, whatever happened above.
@@ -421,8 +487,11 @@ class FormController extends ChangeNotifier {
     }
   }
 
-  /// Set by the screen (needs a context); see A3b showValidationAlert.
+  /// Set by the screen (needs a context); see A3b / Section 4. Shared by every form.
   Future<void> Function(List<String> messages)? alertPresenter;
+  /// Returns true when the user tapped Retry (showErrorAlert, Section 4).
+  Future<bool> Function(AlertContent c, bool offerRetry)? errorPresenter;
+  VoidCallback? onAuthExpired; // route to re-login
 
   Future<void> _alertErrors() async {
     final msgs = <String>[];
@@ -527,14 +596,9 @@ class _BlockingHudState extends State<BlockingHud> {
                       child: Semantics(
                         liveRegion: true,
                         label: widget.message,
-                        child: Card(child: Padding(
-                          padding: const EdgeInsets.all(24),
+                        child: Card(child: Padding(padding: const EdgeInsets.all(24),
                           child: Column(mainAxisSize: MainAxisSize.min, children: [
-                            const CircularProgressIndicator(),
-                            const SizedBox(height: 12),
-                            Text(widget.message),
-                          ]),
-                        )),
+                            const CircularProgressIndicator(), const SizedBox(height: 12), Text(widget.message)]))),
                       ),
                     ),
                   ],
@@ -579,7 +643,7 @@ class V {
 }
 ```
 
-### A3b. R3 helper: adaptive submit alert (ShakeOnError is in Section 5)
+### A3b. R3 helpers: adaptive submit alerts (ShakeOnError is in Section 5)
 
 ```dart
 Future<void> showValidationAlert(BuildContext context, List<String> msgs) =>
@@ -600,7 +664,6 @@ Widget adaptiveAction(BuildContext ctx, String label, VoidCallback onTap) {
       ? CupertinoDialogAction(onPressed: onTap, child: Text(label))
       : TextButton(onPressed: onTap, child: Text(label));
 }
-
 ```
 
 On blur: `Focus(onFocusChange: (f) { if (!f) fieldKey.currentState?.validate(); })` around the field, inside `ShakeOnError(error: ...)` — inline only, never a dialog.
@@ -630,6 +693,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
   void initState() {
     super.initState();
     c.alertPresenter = (m) => showValidationAlert(context, m); // R3
+    c.errorPresenter = (a, retry) => showErrorAlert(context, a, retry);
+    c.onAuthExpired = () => Navigator.of(context).pushNamed('/login');
   }
 
   bool get _dirty => _email.text.isNotEmpty || _password.text.isNotEmpty;

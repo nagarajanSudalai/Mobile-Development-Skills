@@ -17,7 +17,15 @@ Key OS gates (verify): `@FocusState`, `.submitLabel`, `.onSubmit`, `TextField(va
 >
 > **R2. FULL-PAGE BLOCKING HUD while any form action runs.** A full-screen overlay (spinner + optional message) that blocks **all** touches underneath (double taps, other buttons, tab bar, nav bar) **and** blocks every back path (nav back button, swipe-back edge gesture, sheet swipe-to-dismiss, hardware keyboard Esc / ⌘. ). Re-entrant submits are ignored. Minimum display time avoids a flash. The HUD is **always** dismissed on success, error, and cancellation (`defer`) — a stuck HUD is a bug. Accessibility: announce "Saving…" and trap VoiceOver focus inside the overlay.
 
-> **R3. SUBMIT VALIDATION → NATIVE ALERT; FIELD VALIDATION → INLINE.** When validation fails **on submit** (client-side, or server-side errors returned by the submit after the HUD hides), show a native alert (`UIAlertController` / SwiftUI `.alert`) with a title and a concise message listing what's wrong (several issues: bullet list, or the first one); after the user dismisses it, focus the first invalid field. The same errors are **also** mapped to inline field errors. Field-level validation **before** submit (on blur / while editing) is shown **inline only**: footer error text under the field and/or red border, with a short shake (skipped under Reduce Motion), or a poptip anchored to the field. Never use an alert for field-level validation; never show only inline errors on submit.
+> **R3. EVERY SUBMIT FAILURE → NATIVE ALERT (after the HUD hides); FIELD VALIDATION → INLINE.** Any failure of a submit is shown in a native alert (`UIAlertController` / SwiftUI `.alert`) — **never a banner, toast or snackbar** (they disappear, are easy to miss and are poorly announced). Presented by the shared submit wrapper, so every form gets it; never while the HUD is visible. Content comes from one mapper, `alertContent(for:)` → title, message, retryable:
+> - **Client submit validation** and **server field errors (422)**: title + concise list (bullets, max ~3); errors are **also** mapped inline onto fields; on dismiss focus the first invalid field.
+> - **Server business/rule errors** (409 "email already registered", "coupon expired"): the server's title + message, OK.
+> - **Other HTTP 4xx/5xx, timeouts, offline/network**: user-friendly message; **Retry** + Cancel when the request is safe to retry (idempotent or idempotency key), else OK. Retry re-runs the same wrapper (R1 + R2 apply again).
+> - **Auth expired** (401 after refresh failed): alert, then route to re-login on OK.
+>
+> Field-level validation **before** submit (on blur / while editing) is **inline only**: footer error text and/or red border, short shake (skipped under Reduce Motion), or a poptip. Never an alert for field-level validation; never only inline errors on submit. Success feedback may be a toast or navigation — only errors must be alerts.
+
+Sibling skills use the platform-native equivalent for R3: Android Material3 `AlertDialog` / `MaterialAlertDialogBuilder`, React Native `Alert.alert`, Flutter `showAdaptiveDialog` + `AlertDialog.adaptive`.
 
 All three rules are restated in the review checklist (section 12) and common bugs (section 13). A review that finds any form violating R1 or R2 reports it as **critical**.
 
@@ -34,8 +42,10 @@ All three rules are restated in the review checklist (section 12) and common bug
    4. HUD.show("Saving…")           ← R2: overlay window, back paths disabled, a11y announce
    5. try await action()            ← API via repository (ios-network-offline-sync)
    6. defer { HUD.hide(minVisible) }← always, even on throw / cancel
-   7. success → navigate / dismiss / toast
-      failure → R3: server field errors → native alert + inline; focus first after OK; else alert + retry
+   7. success → navigate / dismiss / toast (toast OK for success only)
+      failure → R3: alertContent(for: error) → native alert (never toast/banner/snackbar)
+                422 → list + inline, focus first after OK · 409/rule → server message
+                5xx/timeout/offline → Retry (re-runs run()) + Cancel · 401 → OK → re-login
 ```
 
 State lives in one `@Observable` form model (fields, per-field errors, touched set, dirty baseline, `isSubmitting`). Views only bind to it.
@@ -58,7 +68,7 @@ Write a **form spec** before coding:
 Form: Edit profile        Presented: pushed (tab: Profile)    Mode: edit
 Fields: name(req, 1–50) · email(req, email, server-unique) · phone(opt, E.164 mask) · bio(opt, ≤160)
 Actions: nav-bar Save (R1+R2) · Return on last field = Save · Back → discard prompt if dirty
-Server errors: 422 {errors:{field:[msg]}}   Offline: block submit + banner   Draft: no
+Server errors: 422 {errors:{field:[msg]}}   Offline: alert + Retry   Draft: no
 ```
 
 ## 2. R1 — End editing first
@@ -116,7 +126,7 @@ Rules:
 - **Minimum display**: if shown, keep visible ≥ 400–600 ms; optionally delay showing by ~150 ms for very fast calls — but touches must be blocked from the first instant (install the window immediately with a transparent background, fade the spinner in).
 - **Guaranteed dismissal**: `defer { hud.hide() }` around the action, including `CancellationError` and timeouts. Set a request timeout (ios-network-offline-sync) so the HUD can't spin forever. If the screen is torn down mid-request (`onDisappear`/`deinit`), cancel the task and hide the HUD.
 - **One HUD at a time**: a reference-counted presenter so nested actions don't hide each other's HUD early.
-- **Accessibility**: `UIAccessibility.post(notification: .announcement, argument: "Saving…")` on show; overlay root `accessibilityViewIsModal = true` so VoiceOver can't reach elements below; spinner has a label; on hide post `.screenChanged` to the result (error banner or next screen). Respect Reduce Motion (no fancy scale animations).
+- **Accessibility**: `UIAccessibility.post(notification: .announcement, argument: "Saving…")` on show; overlay root `accessibilityViewIsModal = true` so VoiceOver can't reach elements below; spinner has a label; on hide post `.screenChanged` to the result (error alert or next screen). Respect Reduce Motion (no fancy scale animations).
 - Don't use `fullScreenCover`/`present` for the HUD: presenting changes the presentation stack, can fail if something else is presenting, and fights with sheets and alerts.
 
 Checklist:
@@ -132,7 +142,10 @@ Checklist:
 ```
 endEditing → validateAll → (invalid? R3 alert + inline, focus first error after OK, stop) → HUD.show → API → HUD.hide
   → success: dismiss/pop/navigate, or toast "Saved"; reset dirty baseline
-  → failure: field errors → map to fields + focus first; general error → banner/alert with Retry
+  → failure (R3, inside the wrapper): alertContent(for:) → native alert, never toast/banner/snackbar
+       422 → alert list + inline, focus first after OK · 409/rule → server title+message, OK
+       4xx/5xx/timeout/offline → friendly message, Retry (same wrapper: R1+R2 again) + Cancel if safe
+       401 after refresh failed → alert → re-login
 ```
 
 1. - [ ] One reusable coordinator (`FormSubmitter`) owns `isRunning`, HUD and focus-first-error; screens provide only `validate()` and the `action`.
@@ -141,8 +154,10 @@ endEditing → validateAll → (invalid? R3 alert + inline, focus first error af
 4. - [ ] Navigation on success happens after the HUD is hidden (avoid the HUD window lingering over the next screen).
 5. - [ ] Success resets the dirty baseline **before** popping so the discard prompt doesn't fire.
 6. - [ ] Errors are user-language; raw `DecodingError`/HTTP codes are logged, not shown (ios-crash-analytics).
-7. - [ ] Offline: either block with a clear message or enqueue and tell the user (ios-network-offline-sync).
-8. - [ ] Haptic: `.sensoryFeedback(.success/.error, trigger:)` / `UINotificationFeedbackGenerator`.
+7. - [ ] Offline: native alert with Retry, or enqueue and tell the user (ios-network-offline-sync).
+8. - [ ] R3: every failure (422, 409/rule, 4xx/5xx, timeout, offline, 401) → native alert from one `alertContent(for:)` mapper, presented by the wrapper after the HUD hides; no banner/toast/snackbar for errors.
+9. - [ ] Retry only when safe (idempotent / idempotency key); Retry re-runs the wrapper (HUD shown again).
+10. - [ ] Haptic: `.sensoryFeedback(.success/.error, trigger:)` / `UINotificationFeedbackGenerator`.
 
 ## 5. Validation
 
@@ -152,6 +167,7 @@ endEditing → validateAll → (invalid? R3 alert + inline, focus first error af
 - **Submit display (R3)**: native alert — title ("Check your details"), concise message (one line per issue, max ~3, or the first issue). The alert announces itself to VoiceOver. Inline errors are set too, so the user can see them after dismissing.
 - **First error**: on alert dismiss, scroll to and focus the first invalid field in visual order (`ScrollViewReader.scrollTo` + `focus = .field`; UIKit `scrollRectToVisible` + `becomeFirstResponder`). Don't set focus while the alert is up (it steals the keyboard back).
 - **Server field errors (R3)**: after the HUD hides, show them in a native alert and map keys (`email`, `address.zip`) to `Field` cases inline; unknown keys appear in the alert message only. Clear a server error when the user edits that field.
+- **Other server failures (R3)**: business/rule errors show the server's message in a native alert; HTTP/timeout/offline show a friendly alert with Retry when safe; 401 → alert → re-login. Never a banner/toast/snackbar.
 
 Checklist:
 1. - [ ] Validate on blur + submit; errors clear as soon as fixed.
@@ -251,8 +267,13 @@ Checklist:
 | F8 | Swipe down sheet during HUD | Sheet stays |
 | F9 | Tap tab bar / other buttons during HUD | Ignored |
 | F10 | Fast response (<100 ms) | No HUD flash; touches still blocked during call |
-| F11 | Server error | HUD hidden; error shown; form editable |
-| F12 | Timeout / offline | HUD hidden; retry possible |
+| F11 | Server 500 | HUD hidden, then native alert with Retry + Cancel; form editable |
+| F12 | Timeout | HUD hidden, then native alert with Retry |
+| F27 | 409 / business rule error ("email already registered") | Native alert with server title + message; no toast/banner |
+| F28 | Tap Retry in error alert | Same wrapper re-runs: ends editing, HUD shown, one request |
+| F29 | Submit while offline | Native alert ("You're offline") with Retry |
+| F30 | Any failure | Alert never appears while HUD is visible |
+| F31 | 401 after refresh failed | Native alert, then routed to login |
 | F13 | Leave screen / task cancelled mid-submit | HUD hidden; no orphan window |
 | F14 | Invalid fields, tap Save | No HUD, no request; native alert listing issues + inline errors; first field focused after OK |
 | F15 | Server 422 field errors | HUD hidden, then native alert; inline errors on correct fields; first focused after OK |
@@ -272,7 +293,7 @@ Checklist:
 
 1. - [ ] **R1**: every form action goes through the shared wrapper which ends editing first.
 2. - [ ] **R2**: window-level blocking HUD; all back paths disabled; re-entrancy guard; min display; `defer` hide; a11y.
-3. - [ ] **R3**: submit validation (client + server) → native alert + inline; field validation → inline only.
+3. - [ ] **R3**: every submit failure (client validation, 422, 409/rule, 4xx/5xx, timeout, offline, 401) → native alert after HUD hides via `alertContent(for:)`; 422 also inline; Retry when safe; field validation → inline only.
 4. - [ ] Pipeline order: end editing → validate → HUD → API → hide → result.
 5. - [ ] Validation on blur + submit; first error focused; server errors mapped.
 6. - [ ] Keyboard avoidance, Next chain, tap-outside dismiss.
@@ -295,6 +316,8 @@ Checklist:
 - Validation on every keystroke → error shown while user is still typing the first character
 - **R3 violation**: alert shown on blur / while typing; or submit failure shows only inline errors (user taps Save and "nothing happens")
 - **R3 violation**: server field errors shown only as a generic alert (not mapped inline) or only inline (no alert); alert presented while HUD still up
+- **R3 violation**: server/network error shown as a toast, banner or snackbar instead of a native alert → easy to miss, auto-disappears, not reliably announced by VoiceOver, no Retry
+- **R3 violation**: error alert built ad hoc per screen (some forms forget it) instead of in the shared wrapper; Retry calling the API directly (no HUD, no R1)
 - Focusing the first invalid field while the alert is visible; shake ignoring Reduce Motion
 - Discard prompt shown during submit or right after a successful save
 - Placeholder-only labels; errors only in red; VoiceOver not told about errors
@@ -308,11 +331,11 @@ When asked to **review/audit**:
 2. **R1 / R2 / R3 verdict** first — every form action listed with ✅/❌ and file:line
 3. **Checklist results** — sections 2–10 with ✅ Pass / ❌ Fail / ⚠️ Needs check and file:line
 4. **Critical issues** (stale saves, double submits, back during submit, stuck HUD, lost data) with fix code
-5. **Testing gaps** — F1–F25 not covered
+5. **Testing gaps** — F1–F31 not covered
 
 When asked to **implement**: write the form spec, start from the Appendix (`FormSubmitter`, `BlockingHUD`, validators), wire every action through `submitter.run`, delete unused parts (drafts, multi-step), and call out server contract questions (error format, idempotency) and OS-gated APIs used.
 
-When asked to **debug**: check R1 (is editing ended + yielded before read?), then R2 (who else can receive touches/back?), then R3 (alert on submit, inline on blur) and server-error mapping — in that order.
+When asked to **debug**: check R1 (is editing ended + yielded before read?), then R2 (who else can receive touches/back?), then R3 (every submit failure → native alert via `alertContent(for:)`, inline on blur) and server-error mapping — in that order.
 
 ---
 
@@ -338,12 +361,9 @@ enum Validator {
     static func required(_ s: String, _ label: String) -> String? { s.isEmpty ? "\(label) is required" : nil }
     static func maxLength(_ s: String, _ n: Int) -> String? { s.count > n ? "Maximum \(n) characters" : nil }
     static func email(_ s: String) -> String? {
-        s.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil
-            ? nil : "Enter a valid email address"
+        s.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil ? nil : "Enter a valid email address"
     }
-    static func phone(_ d: String) -> String? {
-        d.isEmpty || (8...15).contains(d.count) ? nil : "Enter a valid phone number"
-    }
+    static func phone(_ d: String) -> String? { d.isEmpty || (8...15).contains(d.count) ? nil : "Enter a valid phone number" }
 }
 
 @Observable @MainActor
@@ -351,7 +371,6 @@ final class ProfileFormModel {
     var values = ProfileValues()
     private(set) var baseline = ProfileValues()
     var errors: [ProfileField: String] = [:]
-    var submitAlert: SubmitAlert?          // R3: submit-time native alert (client or server)
     var shakeCount: [ProfileField: Int] = [:]
     private var submittedOnce = false
 
@@ -380,41 +399,23 @@ final class ProfileFormModel {
         if errors[f] != nil { shakeCount[f, default: 0] += 1 }   // R3 inline shake, never an alert
     }
 
-    func didEdit(_ f: ProfileField) {
-        if errors[f] != nil || submittedOnce { errors[f] = error(for: f) }
-    }
+    func didEdit(_ f: ProfileField) { if errors[f] != nil || submittedOnce { errors[f] = error(for: f) } }
 
-    func validateAll() -> ProfileField? {  // submit: returns first invalid field in visual order
+    var firstInvalid: ProfileField? { ProfileField.allCases.first { errors[$0] != nil } }
+
+    /// Submit: validates everything, returns issue lines in visual order (empty = valid).
+    func validateAll() -> [String] {
         submittedOnce = true
         normalize()
         for f in ProfileField.allCases { errors[f] = error(for: f) }
-        return ProfileField.allCases.first { errors[$0] != nil }
+        return ProfileField.allCases.compactMap { errors[$0] }
     }
 
-    /// Map server 422 `{ "errors": { "email": ["Already taken"] } }` to fields.
-    func apply(serverErrors: [String: [String]]) -> ProfileField? {
-        var unknown: [String] = []
-        for (key, msgs) in serverErrors {
-            if let f = ProfileField(rawValue: key) { errors[f] = msgs.first }
-            else { unknown.append(contentsOf: msgs) }
-        }
-        let first = ProfileField.allCases.first { errors[$0] != nil }
-        presentSubmitAlert(first: first, extra: unknown)      // R3: alert + inline
-        return first
-    }
-
-    func presentSubmitAlert(first: ProfileField?, extra: [String] = []) {
-        let lines = ProfileField.allCases.compactMap { errors[$0] } + extra
-        guard !lines.isEmpty else { return }
-        let shown = lines.prefix(3).map { "• \($0)" }.joined(separator: "\n")
-        submitAlert = SubmitAlert(title: "Check your details",
-                                  message: lines.count > 3 ? shown + "\n…and \(lines.count - 3) more" : shown,
-                                  focusOnDismiss: first)
+    /// Map server 422 `{ "errors": { "email": ["Already taken"] } }` inline; the wrapper shows the alert.
+    func apply(serverErrors: [String: [String]]) {
+        for (key, msgs) in serverErrors { if let f = ProfileField(rawValue: key) { errors[f] = msgs.first } }
     }
 }
-
-struct SubmitAlert: Identifiable { let id = UUID(); let title, message: String; let focusOnDismiss: ProfileField? }
-enum FormSubmitError: Error { case fieldErrors([String: [String]]), message(String) }
 ```
 
 ### A.2 Ending editing (R1) for SwiftUI and UIKit
@@ -427,10 +428,8 @@ enum EditingEnder {
     /// Resign any first responder (incl. SwiftUI-hosted UITextFields: commits marked text, formatters),
     /// then let bindings / onChange / didEndEditing run before the model is read.
     static func endEditing(in view: UIView? = nil) async {
-        if let view { view.endEditing(true) } else {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                            to: nil, from: nil, for: nil)
-        }
+        if let view { view.endEditing(true) }
+        else { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(1))   // one more runloop turn (verify needed on your OS)
     }
@@ -442,43 +441,115 @@ enum EditingEnder {
 ```swift
 import SwiftUI
 
+/// Every submit failure; repositories map HTTP/transport results into it.
+enum FormSubmitError: Error {
+    case fieldErrors([String: [String]])            // 422
+    case business(title: String?, message: String)  // 409 / rule errors: show the server's text
+    case http(Int), timeout, offline                // other 4xx/5xx, URLError timeouts / no network
+    case authExpired                                // 401 after token refresh failed
+}
+
+struct SubmitAlert: Identifiable { let id = UUID(); let title, message: String
+    var retry: (@MainActor () -> Void)? = nil       // non-nil → "Retry" + "Cancel", else "OK"
+    var onDismiss: @MainActor () -> Void = {} }     // focus first invalid field / route to login
+
+func bullets(_ lines: [String]) -> String {
+    let shown = lines.prefix(3).map { "• \($0)" }.joined(separator: "\n")
+    return lines.count > 3 ? shown + "\n…and \(lines.count - 3) more" : shown
+}
+
+/// R3: the ONE place that turns any failure into alert content.
+func alertContent(for error: Error, retrySafe: Bool) -> (title: String, message: String, retryable: Bool) {
+    let e: FormSubmitError = switch error {         // URLError → transport cases
+    case let f as FormSubmitError: f
+    case let u as URLError where u.code == .timedOut: .timeout
+    case let u as URLError where [.notConnectedToInternet, .networkConnectionLost].contains(u.code): .offline
+    default: .http(0)
+    }
+    switch e {
+    case .fieldErrors(let m): return ("Check your details", bullets(m.values.flatMap { $0 }), false)
+    case .business(let t, let m): return (t ?? "Couldn't save", m, false)
+    case .http(let c) where (400..<500).contains(c): return ("Couldn't save", "Please try again later.", false)
+    case .http: return ("Something went wrong", "We couldn't save your changes. Please try again.", retrySafe)
+    case .timeout: return ("Taking too long", "The server didn't respond in time. Please try again.", retrySafe)
+    case .offline: return ("You're offline", "Check your connection and try again.", retrySafe)
+    case .authExpired: return ("Session expired", "Please log in again.", false)
+    }
+}
+
 @Observable @MainActor
 final class FormSubmitter {
     private(set) var isRunning = false
-    private var task: Task<Void, Never>?
-    private let hud: BlockingHUD
-
+    var alert: SubmitAlert?                          // SwiftUI: `.submitAlert(submitter)`
+    var presentAlert: (@MainActor (SubmitAlert) -> Void)?   // UIKit: UIAlertController presenter
+    var onAuthExpired: @MainActor () -> Void = {}    // app-level route to re-login
+    private var task: Task<Void, Never>?; private let hud: BlockingHUD
     init(hud: BlockingHUD = .shared) { self.hud = hud }
-    /// The ONLY entry point for any form action (R1 + R2). `validate` returning false stops before
-    /// HUD/network (and should raise the R3 alert); `action` throws `FormSubmitError` for field errors.
+    /// The ONLY entry point for any form action (R1 + R2 + R3). `validate` returns issue lines
+    /// (non-empty → alert, no HUD/network). `onFailure` only maps errors inline; the alert is shown here.
     func run(message: String = "Saving…",
-             endEditing: @MainActor () -> Void,
-             validate: @MainActor () -> Bool = { true },
+             retrySafe: Bool = false,                // true only if idempotent / idempotency key
+             endEditing: @escaping @MainActor () -> Void,
+             validate: @escaping @MainActor () -> [String] = { [] },
+             focusFirstInvalid: @escaping @MainActor () -> Void = {},
              action: @escaping @MainActor () async throws -> Void,
              onSuccess: @escaping @MainActor () -> Void = {},
              onFailure: @escaping @MainActor (Error) -> Void = { _ in }) {
         guard !isRunning else { return }          // re-entrancy: ignore, don't queue
         isRunning = true                          // set synchronously, before any await
         endEditing()                              // R1 (SwiftUI focus = nil)
+        let again: @MainActor () -> Void = { [weak self] in   // Retry = same wrapper (R1 + R2 again)
+            self?.run(message: message, retrySafe: retrySafe, endEditing: endEditing, validate: validate,
+                      focusFirstInvalid: focusFirstInvalid, action: action,
+                      onSuccess: onSuccess, onFailure: onFailure)
+        }
         task = Task { [weak self] in
             guard let self else { return }
             await EditingEnder.endEditing()       // R1 (responder resign + yield)
-            guard validate() else { self.isRunning = false; return }
+            let issues = validate()
+            guard issues.isEmpty else {           // R3: alert + inline, no HUD
+                self.isRunning = false
+                self.show(SubmitAlert(title: "Check your details", message: bullets(issues),
+                                      onDismiss: focusFirstInvalid))
+                return
+            }
             let token = self.hud.show(message: message)   // R2
             var result: Result<Void, Error> = .success(())
             do { try await action() } catch { result = .failure(error) }
             await self.hud.hide(token)            // awaits min display; always runs
             self.isRunning = false
-            switch result {
+            switch result {                       // R3: alert only now, HUD is gone
             case .success: onSuccess()            // navigate after HUD is gone
             case .failure(let e) where e is CancellationError: break
-            case .failure(let e): onFailure(e)
+            case .failure(let e):
+                onFailure(e)                      // inline mapping (422) first
+                let c = alertContent(for: e, retrySafe: retrySafe)
+                let auth = if case FormSubmitError.authExpired = e { true } else { false }
+                self.show(SubmitAlert(title: c.title, message: c.message, retry: c.retryable ? again : nil,
+                                      onDismiss: auth ? self.onAuthExpired : focusFirstInvalid))
             }
         }
     }
 
+    private func show(_ a: SubmitAlert) {         // only reached after hud.hide → never over the HUD
+        if let presentAlert { presentAlert(a) } else { alert = a }
+    }
+
     /// Call from onDisappear / deinit paths: cancels work; HUD hides via the same path.
     func cancel() { task?.cancel() }
+}
+```
+
+```swift
+extension View {
+    /// R3: the one native alert for every submit failure; attach once per form screen.
+    func submitAlert(_ s: FormSubmitter) -> some View {
+        alert(s.alert?.title ?? "", isPresented: Binding(get: { s.alert != nil }, set: { if !$0 { s.alert = nil } }),
+              presenting: s.alert) { a in
+            if let retry = a.retry { Button("Retry") { retry() }; Button("Cancel", role: .cancel) {} }
+            else { Button("OK") { a.onDismiss() } }      // focus AFTER dismiss
+        } message: { Text($0.message) }
+    }
 }
 ```
 
@@ -495,14 +566,10 @@ final class BlockingHUD {
     struct Token: Hashable { let id = UUID(); let shownAt: ContinuousClock.Instant }
 
     var minimumVisible: Duration = .milliseconds(500), spinnerDelay: Duration = .milliseconds(150)
-    private var window: UIWindow?
-    private var active: Set<Token> = []
-    private let state = HUDState()
+    private var window: UIWindow?; private var active: Set<Token> = []; private let state = HUDState()
 
     func show(message: String) -> Token {
-        let token = Token(shownAt: .now)
-        active.insert(token)
-        state.message = message
+        let token = Token(shownAt: .now); active.insert(token); state.message = message
         if window == nil { installWindow() }
         let delay = spinnerDelay
         Task { [state] in                       // touches blocked now; spinner fades in later
@@ -518,8 +585,7 @@ final class BlockingHUD {
         if state.visible, elapsed < minimumVisible {
             try? await Task.sleep(for: minimumVisible - elapsed)   // sleep error ignored: always hide
         }
-        active.remove(token)
-        guard active.isEmpty else { return }    // reference counted
+        active.remove(token); guard active.isEmpty else { return }    // reference counted
         state.visible = false; window?.isHidden = true; window = nil
         UIAccessibility.post(notification: .screenChanged, argument: nil)
     }
@@ -528,12 +594,9 @@ final class BlockingHUD {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else { return }
-        let w = UIWindow(windowScene: scene)
-        w.windowLevel = .alert + 1
-        w.backgroundColor = .clear
+        let w = UIWindow(windowScene: scene); w.windowLevel = .alert + 1; w.backgroundColor = .clear
         let host = UIHostingController(rootView: HUDView(state: state))
-        host.view.backgroundColor = .clear
-        host.view.accessibilityViewIsModal = true          // trap VoiceOver
+        host.view.backgroundColor = .clear; host.view.accessibilityViewIsModal = true   // trap VoiceOver
         w.rootViewController = host
         w.isHidden = false                                  // not key: keyboard already dismissed
         window = w
@@ -551,15 +614,10 @@ private struct HUDView: View {
             Color.black.opacity(state.visible ? 0.25 : 0.001)
                 .ignoresSafeArea().contentShape(Rectangle()).onTapGesture {}
             if state.visible {
-                VStack(spacing: 12) {
-                    ProgressView().controlSize(.large)
-                    if !state.message.isEmpty { Text(state.message).font(.headline) }
-                }
-                .padding(24)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(state.message)
-                .transition(.opacity)
+                VStack(spacing: 12) { ProgressView().controlSize(.large); Text(state.message).font(.headline) }
+                    .padding(24).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                    .accessibilityElement(children: .combine).accessibilityLabel(state.message)
+                    .transition(.opacity)
             }
         }
     }
@@ -580,25 +638,18 @@ struct Shake: ViewModifier {
     let trigger: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
-        content.keyframeAnimator(initialValue: 0.0, trigger: trigger) { view, x in
-            view.offset(x: reduceMotion ? 0 : x)
-        } keyframes: { _ in
-            KeyframeTrack {
-                LinearKeyframe(-8.0, duration: 0.06); LinearKeyframe(8.0, duration: 0.06)
-                LinearKeyframe(-4.0, duration: 0.06); LinearKeyframe(0.0, duration: 0.06)
-            }
-        }
+        content.keyframeAnimator(initialValue: 0.0, trigger: trigger) { $0.offset(x: reduceMotion ? 0 : $1) }
+            keyframes: { _ in KeyframeTrack { for x in [-8.0, 8, -4, 0] { LinearKeyframe(x, duration: 0.06) } } }
     }
 }
 
 /// UIKit: same for UIViewController-based forms.
 extension UIViewController {
     func setFormBackNavigationBlocked(_ blocked: Bool) {
-        navigationItem.hidesBackButton = blocked
+        navigationItem.hidesBackButton = blocked; isModalInPresentation = blocked
         navigationController?.interactivePopGestureRecognizer?.isEnabled = !blocked
-        isModalInPresentation = blocked
-        navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !blocked }
-        navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !blocked }
+        (navigationItem.leftBarButtonItems ?? []).forEach { $0.isEnabled = !blocked }
+        (navigationItem.rightBarButtonItems ?? []).forEach { $0.isEnabled = !blocked }
     }
 }
 ```
@@ -611,15 +662,14 @@ UIKit-only: swap the hosting controller for a plain VC (full-bounds view + `UIAc
 import SwiftUI
 
 protocol ProfileRepository: Sendable {
-    func save(_ v: ProfileValues) async throws   // throws FormSubmitError.fieldErrors on 422
+    func save(_ v: ProfileValues) async throws   // throws FormSubmitError (422, 409, http, 401) or URLError
 }
 
 struct EditProfileScreen: View {
     let repository: ProfileRepository
     let initial: ProfileValues
     @Environment(\.dismiss) private var dismiss
-    @State private var model = ProfileFormModel()
-    @State private var submitter = FormSubmitter()
+    @State private var model = ProfileFormModel(); @State private var submitter = FormSubmitter()
     @State private var showDiscard = false
     @FocusState private var focus: ProfileField?
 
@@ -636,18 +686,13 @@ struct EditProfileScreen: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .submitLabel(.next)
                 }
-                field(.phone, "Phone (optional)") {
-                    TextField("Phone", text: $model.values.phone).keyboardType(.phonePad).textContentType(.telephoneNumber)
-                }
-                field(.bio, "Bio (optional)") {
-                    TextField("Bio", text: $model.values.bio, axis: .vertical).lineLimit(3...6).submitLabel(.done)
-                }
+                field(.phone, "Phone (optional)") { TextField("Phone", text: $model.values.phone).keyboardType(.phonePad).textContentType(.telephoneNumber) }
+                field(.bio, "Bio (optional)") { TextField("Bio", text: $model.values.bio, axis: .vertical).lineLimit(3...6).submitLabel(.done) }
             }
             .scrollDismissesKeyboard(.interactively)
             .onSubmit { advance(from: focus) }               // Return chains / submits
-            .onChange(of: focus) { old, new in
-                if let old { model.didBlur(old) }           // validate on blur
-                if let new { withAnimation { proxy.scrollTo(new, anchor: .center) } }
+            .onChange(of: focus) { old, new in              // validate on blur; scroll focused into view
+                if let old { model.didBlur(old) }; if let new { withAnimation { proxy.scrollTo(new, anchor: .center) } }
             }
         }
         .navigationTitle("Edit profile")
@@ -659,14 +704,9 @@ struct EditProfileScreen: View {
         .modifier(BlocksBackWhileSubmitting(isRunning: submitter.isRunning, isDirty: model.isDirty))
         .navigationBarBackButtonHidden(true)                // custom Cancel handles discard prompt
         .confirmationDialog("Discard changes?", isPresented: $showDiscard, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { dismiss() }
-            Button("Keep editing", role: .cancel) {}
+            Button("Discard", role: .destructive) { dismiss() }; Button("Keep editing", role: .cancel) {}
         }
-        .alert(model.submitAlert?.title ?? "", isPresented: Binding(
-                get: { model.submitAlert != nil }, set: { if !$0 { model.submitAlert = nil } }),
-               presenting: model.submitAlert) { alert in
-            Button("OK") { focus = alert.focusOnDismiss }   // focus AFTER dismiss; alert announced itself
-        } message: { Text($0.message) }
+        .submitAlert(submitter)                             // R3: every failure → native alert
         .onAppear { if !model.isDirty { model.load(initial) } }
         .onDisappear { submitter.cancel() }
     }
@@ -674,31 +714,19 @@ struct EditProfileScreen: View {
     private func submit() {
         submitter.run(
             endEditing: { focus = nil },
-            validate: {
-                if let first = model.validateAll() {           // R3: alert + inline, focus after OK
-                    model.presentSubmitAlert(first: first); return false
-                }
-                return true
-            },
+            validate: { model.validateAll() },               // issues → wrapper alert + inline
+            focusFirstInvalid: { focus = model.firstInvalid },
             action: { [values = model.values, repository] in try await repository.save(values) },
             onSuccess: { model.markSaved(); dismiss() },     // baseline reset before pop
-            onFailure: { error in
-                switch error {
-                case FormSubmitError.fieldErrors(let map):
-                    _ = model.apply(serverErrors: map)          // HUD already hidden → alert + inline
-                default:
-                    let m = (error as? FormSubmitError).flatMap { if case .message(let m) = $0 { m } else { nil } }
-                    model.submitAlert = SubmitAlert(title: "Couldn't save",
-                        message: m ?? "Check your connection and try again.", focusOnDismiss: nil)
-                }
+            onFailure: { error in                            // inline only; wrapper shows the alert
+                if case FormSubmitError.fieldErrors(let map) = error { model.apply(serverErrors: map) }
             })
     }
 
     private func advance(from field: ProfileField?) {
         guard let field, let i = ProfileField.allCases.firstIndex(of: field) else { return }
-        let next = ProfileField.allCases.index(after: i)
-        if next < ProfileField.allCases.endIndex { focus = ProfileField.allCases[next] }
-        else { submit() }                                   // last field Return → same wrapper
+        let all = ProfileField.allCases, next = all.index(after: i)
+        if next < all.endIndex { focus = all[next] } else { submit() }   // last field Return → same wrapper
     }
 
     private func attemptClose() { if model.isDirty { showDiscard = true } else { dismiss() } }
@@ -711,8 +739,7 @@ struct EditProfileScreen: View {
             content()
                 .focused($focus, equals: f)
                 .onChange(of: model.values) { model.didEdit(f) }
-                .padding(6)
-                .overlay(RoundedRectangle(cornerRadius: 8)            // R3 inline: red border
+                .padding(6).overlay(RoundedRectangle(cornerRadius: 8)            // R3 inline: red border
                     .stroke(model.errors[f] == nil ? .clear : .red, lineWidth: 1))
                 .modifier(Shake(trigger: model.shakeCount[f, default: 0]))
                 .accessibilityLabel(label)
@@ -726,40 +753,36 @@ struct EditProfileScreen: View {
 }
 ```
 
-### A.6 UIKit wiring (same wrapper, R3 alert)
+### A.6 UIKit wiring (same wrapper, R3 alert via `presentAlert`)
 
-Fields: `textContentType` `.username`/`.password`, `returnKeyType` `.next`/`.go`, `textFieldShouldReturn` → next field or `submit()`; nav-bar button `UIBarButtonItem(primaryAction: UIAction { [weak self] _ in self?.submit() })`.
+Fields: `textContentType` `.username`/`.password`, `returnKeyType` `.next`/`.go`, `textFieldShouldReturn` → next field or `submit()`; nav-bar button `UIBarButtonItem(primaryAction: UIAction { [weak self] _ in self?.submit() })`. In `viewDidLoad`: `submitter.presentAlert = { [weak self] in self?.showAlert($0) }`.
 
 ```swift
 private func submit() {
     submitter.run(
         message: "Logging in…",
         endEditing: { [view] in view?.endEditing(true) },                     // R1
-        validate: { [weak self] in
-            guard let self else { return false }
-            var issues: [(UITextField, String)] = []
-            if (email.text ?? "").isEmpty { issues.append((email, "Enter your email")) }
-            if (password.text ?? "").isEmpty { issues.append((password, "Enter your password")) }
-            guard let first = issues.first else { return true }
-            showAlert("Check your details", issues.map { "• \($0.1)" }.joined(separator: "\n"),
-                      focus: first.0)                                         // R3
-            return false
-        },
+        validate: { [weak self] in self?.issues().map(\.1) ?? [] },          // R3 alert via wrapper
+        focusFirstInvalid: { [weak self] in _ = self?.issues().first?.0.becomeFirstResponder() },
         action: { [weak self] in
             guard let self else { return }
             setFormBackNavigationBlocked(true)                                // R2 defence in depth
             defer { setFormBackNavigationBlocked(false) }
             try await login(email.text ?? "", password.text ?? "")
         },
-        onSuccess: { [weak self] in self?.dismiss(animated: true) },
-        onFailure: { [weak self] _ in                                         // HUD already hidden
-            self?.showAlert("Couldn't log in", "Check your details and try again.", focus: nil)
-        })
+        onSuccess: { [weak self] in self?.dismiss(animated: true) })          // failures → wrapper alert
 }
 
-private func showAlert(_ title: String, _ message: String, focus field: UITextField?) {
-    let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-    alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in field?.becomeFirstResponder() })
+private func issues() -> [(UITextField, String)] {
+    [(email, "Enter your email"), (password, "Enter your password")].filter { ($0.0.text ?? "").isEmpty }
+}
+
+private func showAlert(_ a: SubmitAlert) {                                    // HUD already hidden
+    let alert = UIAlertController(title: a.title, message: a.message, preferredStyle: .alert)
+    if let retry = a.retry {
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Retry", style: .default) { _ in retry() })
+    } else { alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in a.onDismiss() }) }
     present(alert, animated: true)
 }
 ```
